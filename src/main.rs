@@ -1,8 +1,11 @@
+use anyhow::{Context, Result};
 use mnist::*;
 use nalgebra::*;
-use rkyv::*;
+use serde::{Deserialize, Serialize};
+use std::fs::File;
+use std::io::{BufReader, BufWriter};
 
-fn main() {
+fn main() -> Result<()> {
     let n_training_set = 5_000;
     let Mnist {
         trn_img,
@@ -26,7 +29,13 @@ fn main() {
     let train_label =
         DVector::from_row_slice(&trn_lbl).map(|digit| if digit == 3 { 1.0 } else { 0.0 });
 
-    svd_least_squares(&train_data, &train_label);
+    // let weights = svd_least_squares(&train_data, &train_label);
+    // save_json(weights)?;
+
+    let weights = open_json()?;
+    println!("{:?}", weights.weights);
+
+    Ok(())
 }
 
 fn svd_least_squares(x: &DMatrix<f64>, y: &DVector<f64>) -> Weights {
@@ -36,6 +45,7 @@ fn svd_least_squares(x: &DMatrix<f64>, y: &DVector<f64>) -> Weights {
     Weights::new(&weights)
 }
 
+#[derive(Serialize, Deserialize)]
 struct Weights {
     rows: usize,
     cols: usize,
@@ -54,4 +64,20 @@ impl Weights {
             weights,
         }
     }
+}
+
+fn save_json(weights: Weights) -> Result<()> {
+    let file = File::create("weights.json").context("Failed to create file at path")?;
+    let mut writer = BufWriter::new(file);
+    serde_json::to_writer_pretty(&mut writer, &weights)
+        .context("Failed to serialize weights into JSON format")?;
+    Ok(())
+}
+
+fn open_json() -> Result<Weights> {
+    let file = File::open("weights.json")?;
+    let weights_json = BufReader::new(file);
+    let weights =
+        serde_json::from_reader(weights_json).context("Failed to deserialize weights JSON")?;
+    Ok(weights)
 }
