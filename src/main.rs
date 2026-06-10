@@ -1,5 +1,6 @@
 use mnist::*;
 use nalgebra::*;
+use rkyv::*;
 
 fn main() {
     let n_training_set = 5_000;
@@ -28,9 +29,29 @@ fn main() {
     svd_least_squares(&train_data, &train_label);
 }
 
-fn svd_least_squares(x: &DMatrix<f64>, y: &DVector<f64>) {
+fn svd_least_squares(x: &DMatrix<f64>, y: &DVector<f64>) -> Weights {
     let svd = x.clone().svd(true, true);
     let weights = svd.solve(y, 1e-12).unwrap();
 
-    println!("{:?}", weights);
+    Weights::new(&weights)
+}
+
+struct Weights {
+    rows: usize,
+    cols: usize,
+    weights: Vec<f64>,
+}
+
+impl Weights {
+    fn new(vector: &DVector<f64>) -> Weights {
+        let rows = vector.nrows();
+        let cols = vector.ncols();
+        let weights = vector.data.as_vec().to_owned();
+
+        Weights {
+            rows,
+            cols,
+            weights,
+        }
+    }
 }
