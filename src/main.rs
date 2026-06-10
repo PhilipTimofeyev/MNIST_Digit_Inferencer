@@ -10,15 +10,15 @@ fn main() -> Result<()> {
     let Mnist {
         trn_img,
         trn_lbl,
-        // tst_img,
-        // tst_lbl,
+        tst_img,
+        tst_lbl,
         ..
     } = MnistBuilder::new()
         .base_path("data_sets/mnist/")
         .label_format_digit()
         .training_set_length(n_training_set)
         .validation_set_length(10)
-        .test_set_length(10_000)
+        .test_set_length(50)
         .finalize();
 
     // For linear regression, only need a binary pixel value of on or off, which is why the pixel value is
@@ -33,7 +33,8 @@ fn main() -> Result<()> {
     // save_json(weights)?;
 
     let weights = open_json()?;
-    println!("{:?}", weights.weights);
+
+    digit_inference(tst_img, tst_lbl, weights);
 
     Ok(())
 }
@@ -45,7 +46,7 @@ fn svd_least_squares(x: &DMatrix<f64>, y: &DVector<f64>) -> Weights {
     Weights::new(&weights)
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 struct Weights {
     rows: usize,
     cols: usize,
@@ -80,4 +81,17 @@ fn open_json() -> Result<Weights> {
     let weights =
         serde_json::from_reader(weights_json).context("Failed to deserialize weights JSON")?;
     Ok(weights)
+}
+
+fn digit_inference(tst_img: Vec<u8>, tst_lbl: Vec<u8>, weights: Weights) {
+    let test_data = DMatrix::from_row_slice(50, 784, &tst_img)
+        .map(|pixel| if pixel as f64 > 0.0 { 1.0 } else { 0.0 });
+
+    let weights = DVector::from_row_slice(&weights.weights);
+
+    let scores = &test_data * &weights;
+
+    for i in 0..50 {
+        println!("digit={} score={}", tst_lbl[i], scores[i]);
+    }
 }
