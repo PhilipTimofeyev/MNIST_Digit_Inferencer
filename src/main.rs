@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 
+const EPSILON: f64 = 1e-12;
+
 fn main() -> Result<()> {
     let n_training_set = 10_000;
     let Mnist {
@@ -28,7 +30,7 @@ fn main() -> Result<()> {
         .map(|pixel| if pixel as f64 > 0.0 { 1.0 } else { 0.0 });
 
     let train_label =
-        DVector::from_row_slice(&trn_lbl).map(|digit| if digit == 0 { 1.0 } else { 0.0 });
+        DVector::from_row_slice(&trn_lbl).map(|digit| if digit == 9 { 1.0 } else { 0.0 });
 
     // let weights = svd_least_squares_lapack(&train_data, &train_label);
     // save_json(weights)?;
@@ -42,7 +44,7 @@ fn main() -> Result<()> {
 
 fn svd_least_squares(x: &DMatrix<f64>, y: &DVector<f64>) -> Weights {
     let svd = x.clone().svd(true, true);
-    let weights = svd.solve(y, 1e-12).unwrap();
+    let weights = svd.solve(y, EPSILON).unwrap();
 
     Weights::new(&weights)
 }
@@ -63,7 +65,7 @@ fn svd_least_squares_lapack(x: &DMatrix<f64>, y: &DVector<f64>) -> Weights {
     // This filters out values that would cause a division by zero, and divides (U^T*y) by the
     // singular values
     for (trimmed_i, singular_i) in trimmed_ut_y.iter_mut().zip(svd.singular_values.iter()) {
-        if *singular_i > 1e-12 {
+        if *singular_i > EPSILON {
             *trimmed_i /= *singular_i;
         } else {
             *trimmed_i = 0.0;
@@ -145,8 +147,6 @@ mod tests {
         let x = DMatrix::<f64>::from_row_slice(3, 2, &[1.0, 1.0, 2.0, 1.0, 3.0, 1.0]);
         let y = DVector::<f64>::from_vec(vec![2.0, 3.0, 7.0]);
         let result = svd_least_squares_lapack(&x, &y);
-
-        println!("{:?}", result);
 
         assert_relative_eq!(result.weights[..], &vec![2.5, -1.0], epsilon = 0.0001);
     }
