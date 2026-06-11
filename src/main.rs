@@ -1,12 +1,13 @@
 use anyhow::{Context, Result};
 use mnist::*;
 use nalgebra::*;
+use nalgebra_lapack::SVD;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 
 fn main() -> Result<()> {
-    let n_training_set = 5_000;
+    let n_training_set = 10_000;
     let Mnist {
         trn_img,
         trn_lbl,
@@ -18,7 +19,7 @@ fn main() -> Result<()> {
         .label_format_digit()
         .training_set_length(n_training_set)
         .validation_set_length(10)
-        .test_set_length(50)
+        .test_set_length(100)
         .finalize();
 
     // For linear regression, only need a binary pixel value of on or off, which is why the pixel value is
@@ -27,9 +28,9 @@ fn main() -> Result<()> {
         .map(|pixel| if pixel as f64 > 0.0 { 1.0 } else { 0.0 });
 
     let train_label =
-        DVector::from_row_slice(&trn_lbl).map(|digit| if digit == 3 { 1.0 } else { 0.0 });
+        DVector::from_row_slice(&trn_lbl).map(|digit| if digit == 0 { 1.0 } else { 0.0 });
 
-    // let weights = svd_least_squares(&train_data, &train_label);
+    // let weights = svd_least_squares_lapack(&train_data, &train_label);
     // save_json(weights)?;
 
     let weights = open_json()?;
@@ -44,6 +45,35 @@ fn svd_least_squares(x: &DMatrix<f64>, y: &DVector<f64>) -> Weights {
     let weights = svd.solve(y, 1e-12).unwrap();
 
     Weights::new(&weights)
+}
+
+fn svd_least_squares_lapack(x: &DMatrix<f64>, y: &DVector<f64>) -> Weights {
+    let svd = SVD::new(x.clone()).unwrap();
+
+    // Equation to solve is w = V * sigma^-1 * U^T * y
+
+    let ut_y = svd.u.transpose() * y;
+
+    // Since the sigma matrix is comprised of singular values of A^T*A, it will have a multiplicity
+    // of the number of rows (784 in the case of the MNIST data set). Beyond those rows the values
+    // will be zero, so to save time on computation, the ut_y matrix can be trimmed down to 784 x 1,
+    // since those values would be multiplied by zero anyway.
+    let mut trimmed_ut_y = ut_y.rows(0, svd.singular_values.len()).into_owned();
+
+    // This filters out values that would cause a division by zero, and divides (U^T*y) by the
+    // singular values
+    for (trimmed_i, singular_i) in trimmed_ut_y.iter_mut().zip(svd.singular_values.iter()) {
+        if *singular_i > 1e-12 {
+            *trimmed_i /= *singular_i;
+        } else {
+            *trimmed_i = 0.0;
+        }
+    }
+
+    // Finally multiply by V to get the least squares solution
+    let solution = svd.vt.transpose() * trimmed_ut_y;
+
+    Weights::new(&solution)
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -84,14 +114,40 @@ fn open_json() -> Result<Weights> {
 }
 
 fn digit_inference(tst_img: Vec<u8>, tst_lbl: Vec<u8>, weights: Weights) {
-    let test_data = DMatrix::from_row_slice(50, 784, &tst_img)
+    let test_data = DMatrix::from_row_slice(100, 784, &tst_img)
         .map(|pixel| if pixel as f64 > 0.0 { 1.0 } else { 0.0 });
 
     let weights = DVector::from_row_slice(&weights.weights);
 
     let scores = &test_data * &weights;
 
-    for i in 0..50 {
+    for i in 0..100 {
         println!("digit={} score={}", tst_lbl[i], scores[i]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    #[test]
+    fn test_svd_least_squares() {
+        let x = DMatrix::<f64>::from_row_slice(3, 2, &[1.0, 1.0, 2.0, 1.0, 3.0, 1.0]);
+        let y = DVector::<f64>::from_vec(vec![2.0, 3.0, 7.0]);
+        let result = svd_least_squares(&x, &y);
+
+        assert_relative_eq!(result.weights[..], &vec![2.5, -1.0], epsilon = 0.0001);
+    }
+
+    #[test]
+    fn test_svd_least_squares_lapack() {
+        let x = DMatrix::<f64>::from_row_slice(3, 2, &[1.0, 1.0, 2.0, 1.0, 3.0, 1.0]);
+        let y = DVector::<f64>::from_vec(vec![2.0, 3.0, 7.0]);
+        let result = svd_least_squares_lapack(&x, &y);
+
+        println!("{:?}", result);
+
+        assert_relative_eq!(result.weights[..], &vec![2.5, -1.0], epsilon = 0.0001);
     }
 }
