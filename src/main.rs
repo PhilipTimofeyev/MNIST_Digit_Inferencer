@@ -8,9 +8,9 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter};
 
 const EPSILON: f64 = 1e-12;
+const N_TRAINING_SET: u32 = 5_000;
 
 fn main() -> Result<()> {
-    let n_training_set = 10_000;
     let Mnist {
         trn_img,
         trn_lbl,
@@ -20,20 +20,12 @@ fn main() -> Result<()> {
     } = MnistBuilder::new()
         .base_path("data_sets/mnist/")
         .label_format_digit()
-        .training_set_length(n_training_set)
+        .training_set_length(N_TRAINING_SET)
         .validation_set_length(10)
         .test_set_length(100)
         .finalize();
 
-    // For linear regression, only need a binary pixel value of on or off, which is why the pixel value is
-    // converted to 0 (off) or 1 (on)
-    let train_data = DMatrix::from_row_slice(n_training_set as usize, 784, &trn_img)
-        .map(|pixel| if pixel as f64 > 0.0 { 1.0 } else { 0.0 });
-
-    let train_label =
-        DVector::from_row_slice(&trn_lbl).map(|digit| if digit == 5 { 1.0 } else { 0.0 });
-
-    select_train_or_infer(&train_data, &train_label, &tst_img, &tst_lbl)?;
+    select_train_or_infer(&trn_img, &trn_lbl, &tst_img, &tst_lbl)?;
 
     Ok(())
 }
@@ -96,8 +88,8 @@ impl Weights {
 }
 
 fn select_train_or_infer(
-    train_data: &DMatrix<f64>,
-    train_label: &DVector<f64>,
+    trn_img: &[u8],
+    trn_lbl: &[u8],
     tst_img: &[u8],
     tst_lbl: &[u8],
 ) -> Result<()> {
@@ -106,12 +98,14 @@ fn select_train_or_infer(
     let selection = FuzzySelect::new()
         .with_prompt("Select and option:")
         .items(&items)
-        .interact()
-        .unwrap();
+        .interact()?;
 
     match selection {
         0 => {
-            let weights = svd_least_squares_lapack(train_data, train_label);
+            let digit_to_train = select_digit_to_train()?;
+            let (train_data, train_label) = prepare_train_data(trn_img, trn_lbl, digit_to_train)?;
+            println!("Training digit: {}", digit_to_train);
+            let weights = svd_least_squares_lapack(&train_data, &train_label);
             save_json(weights)?
         }
         1 => {
@@ -123,6 +117,33 @@ fn select_train_or_infer(
     }
 
     Ok(())
+}
+
+fn select_digit_to_train() -> Result<u8> {
+    let digits = vec!["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
+
+    let selection = FuzzySelect::new()
+        .with_prompt("Select a digit to train:")
+        .items(&digits)
+        .interact()?;
+
+    let digit: u8 = selection as u8;
+
+    Ok(digit)
+}
+
+fn prepare_train_data(
+    trn_img: &[u8],
+    trn_lbl: &[u8],
+    digit_to_train: u8,
+) -> Result<(DMatrix<f64>, DVector<f64>)> {
+    let train_data = DMatrix::from_row_slice(N_TRAINING_SET as usize, 784, &trn_img)
+        .map(|pixel| if pixel as f64 > 0.0 { 1.0 } else { 0.0 });
+
+    let train_label = DVector::from_row_slice(&trn_lbl)
+        .map(|digit| if digit == digit_to_train { 1.0 } else { 0.0 });
+
+    Ok((train_data, train_label))
 }
 
 fn save_json(weights: Weights) -> Result<()> {
