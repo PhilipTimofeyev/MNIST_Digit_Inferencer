@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
+use dialoguer::FuzzySelect;
 use mnist::*;
-use nalgebra::*;
+use nalgebra::{DMatrix, DVector};
 use nalgebra_lapack::SVD;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
@@ -30,14 +31,9 @@ fn main() -> Result<()> {
         .map(|pixel| if pixel as f64 > 0.0 { 1.0 } else { 0.0 });
 
     let train_label =
-        DVector::from_row_slice(&trn_lbl).map(|digit| if digit == 9 { 1.0 } else { 0.0 });
+        DVector::from_row_slice(&trn_lbl).map(|digit| if digit == 5 { 1.0 } else { 0.0 });
 
-    // let weights = svd_least_squares_lapack(&train_data, &train_label);
-    // save_json(weights)?;
-
-    let weights = open_json()?;
-
-    digit_inference(tst_img, tst_lbl, weights);
+    select_train_or_infer(&train_data, &train_label, &tst_img, &tst_lbl)?;
 
     Ok(())
 }
@@ -99,6 +95,36 @@ impl Weights {
     }
 }
 
+fn select_train_or_infer(
+    train_data: &DMatrix<f64>,
+    train_label: &DVector<f64>,
+    tst_img: &[u8],
+    tst_lbl: &[u8],
+) -> Result<()> {
+    let items = vec!["Train", "Inference"];
+
+    let selection = FuzzySelect::new()
+        .with_prompt("Select and option:")
+        .items(&items)
+        .interact()
+        .unwrap();
+
+    match selection {
+        0 => {
+            let weights = svd_least_squares_lapack(train_data, train_label);
+            save_json(weights)?
+        }
+        1 => {
+            let weights = open_json()?;
+
+            digit_inference(tst_img, tst_lbl, weights);
+        }
+        _ => println!("Quit"),
+    }
+
+    Ok(())
+}
+
 fn save_json(weights: Weights) -> Result<()> {
     let file = File::create("weights.json").context("Failed to create file at path")?;
     let mut writer = BufWriter::new(file);
@@ -115,7 +141,7 @@ fn open_json() -> Result<Weights> {
     Ok(weights)
 }
 
-fn digit_inference(tst_img: Vec<u8>, tst_lbl: Vec<u8>, weights: Weights) {
+fn digit_inference(tst_img: &[u8], tst_lbl: &[u8], weights: Weights) {
     let test_data = DMatrix::from_row_slice(100, 784, &tst_img)
         .map(|pixel| if pixel as f64 > 0.0 { 1.0 } else { 0.0 });
 

@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.102"
 approx = "0.5.1"
+dialoguer = { version = "0.12", features = ["fuzzy-select"] }
 mnist = "0.6.0"
 nalgebra = { version = "0.35", features = ["rkyv-serialize"] }
 nalgebra-lapack = { version = "0.28.0", default-features = false, features = ["lapack-accelerate"] }
