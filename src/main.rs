@@ -93,34 +93,36 @@ fn select_train_or_infer(
     tst_img: &[u8],
     tst_lbl: &[u8],
 ) -> Result<()> {
-    let items = vec!["Train", "Inference"];
+    loop {
+        let items = vec!["Train", "Inference", "Exit"];
+        let selection = FuzzySelect::new()
+            .with_prompt("Select and option:")
+            .items(&items)
+            .interact()?;
 
-    let selection = FuzzySelect::new()
-        .with_prompt("Select and option:")
-        .items(&items)
-        .interact()?;
+        match selection {
+            0 => {
+                let digit_to_train = select_digit_to_train()?;
+                let (train_data, train_label) =
+                    prepare_train_data(trn_img, trn_lbl, digit_to_train)?;
+                println!("Training digit: {}", digit_to_train);
+                let weights = svd_least_squares_lapack(&train_data, &train_label);
+                save_json(weights)?
+            }
+            1 => {
+                let weights = open_json()?;
 
-    match selection {
-        0 => {
-            let digit_to_train = select_digit_to_train()?;
-            let (train_data, train_label) = prepare_train_data(trn_img, trn_lbl, digit_to_train)?;
-            println!("Training digit: {}", digit_to_train);
-            let weights = svd_least_squares_lapack(&train_data, &train_label);
-            save_json(weights)?
+                digit_inference(tst_img, tst_lbl, weights);
+            }
+            _ => break,
         }
-        1 => {
-            let weights = open_json()?;
-
-            digit_inference(tst_img, tst_lbl, weights);
-        }
-        _ => println!("Quit"),
     }
 
     Ok(())
 }
 
 fn select_digit_to_train() -> Result<u8> {
-    let digits = vec!["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
+    let digits: Vec<u8> = (0..=9).collect();
 
     let selection = FuzzySelect::new()
         .with_prompt("Select a digit to train:")
