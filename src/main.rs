@@ -3,12 +3,13 @@ use dialoguer::FuzzySelect;
 use mnist::*;
 use nalgebra::{DMatrix, DVector};
 use nalgebra_lapack::SVD;
+use plotters::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 
-const EPSILON: f64 = 1e-12;
-const N_TRAINING_SET: u32 = 5_000;
+const EPSILON: f64 = 0.1;
+const N_TRAINING_SET: u32 = 5000;
 
 fn main() -> Result<()> {
     let Mnist {
@@ -22,7 +23,7 @@ fn main() -> Result<()> {
         .label_format_digit()
         .training_set_length(N_TRAINING_SET)
         .validation_set_length(10)
-        .test_set_length(100)
+        .test_set_length(5000)
         .finalize();
 
     select_train_or_infer(&trn_img, &trn_lbl, &tst_img, &tst_lbl)?;
@@ -93,6 +94,7 @@ fn select_train_or_infer(
     tst_img: &[u8],
     tst_lbl: &[u8],
 ) -> Result<()> {
+    let mut digit_to_train = 0;
     loop {
         let items = vec!["Train", "Inference", "Exit"];
         let selection = FuzzySelect::new()
@@ -102,7 +104,7 @@ fn select_train_or_infer(
 
         match selection {
             0 => {
-                let digit_to_train = select_digit_to_train()?;
+                digit_to_train = select_digit_to_train()?;
                 let (train_data, train_label) =
                     prepare_train_data(trn_img, trn_lbl, digit_to_train)?;
                 println!("Training digit: {}", digit_to_train);
@@ -110,9 +112,10 @@ fn select_train_or_infer(
                 save_json(weights)?
             }
             1 => {
+                println!("{}", digit_to_train);
                 let weights = open_json()?;
 
-                digit_inference(tst_img, tst_lbl, weights);
+                digit_inference(tst_img, tst_lbl, weights, digit_to_train);
             }
             _ => break,
         }
@@ -164,17 +167,65 @@ fn open_json() -> Result<Weights> {
     Ok(weights)
 }
 
-fn digit_inference(tst_img: &[u8], tst_lbl: &[u8], weights: Weights) {
-    let test_data = DMatrix::from_row_slice(100, 784, &tst_img)
+fn digit_inference(
+    tst_img: &[u8],
+    tst_lbl: &[u8],
+    weights: Weights,
+    trained_digit: u8,
+) -> Result<()> {
+    let test_data = DMatrix::from_row_slice(5000, 784, &tst_img)
         .map(|pixel| if pixel as f64 > 0.0 { 1.0 } else { 0.0 });
 
     let weights = DVector::from_row_slice(&weights.weights);
 
     let scores = &test_data * &weights;
+    let x: Vec<f64> = scores.iter().cloned().collect();
 
-    for i in 0..100 {
-        println!("digit={} score={}", tst_lbl[i], scores[i]);
-    }
+    let y: Vec<f64> = tst_lbl
+        .iter()
+        .map(|digit| if *digit == trained_digit { 1.0 } else { 0.0 })
+        .collect();
+
+    score_scatterplot(x, y)?;
+
+    // for i in 0..100 {
+    //     println!("digit={} score={}", tst_lbl[i], scores[i]);
+    // }
+
+    Ok(())
+}
+
+// Creates a scatterplot where scores of whether the image is a specific digit are the x-axis, and
+// whether is was the digit (1) or a different digit (0), on the y-axis
+fn score_scatterplot(x_values: Vec<f64>, y_values: Vec<f64>) -> Result<()> {
+    let root = BitMapBackend::new("digit_scatterplot.png", (1280, 960)).into_drawing_area();
+    root.fill(&WHITE)?;
+    let mut chart = ChartBuilder::on(&root)
+        .caption("Digit Scatterplot", ("sans-serif", 50).into_font())
+        .margin(5)
+        .x_label_area_size(45)
+        .y_label_area_size(45)
+        .build_cartesian_2d(-1f64..2f64, -1f64..2f64)?;
+
+    chart
+        .configure_mesh()
+        .x_desc("Score")
+        .y_desc("Digit (1) or Other (0)")
+        .x_label_offset(40)
+        .y_label_offset(40)
+        .axis_desc_style(("sans-serif", 20, &BLACK))
+        .draw()?;
+
+    chart.draw_series(
+        x_values
+            .iter()
+            .zip(y_values.iter())
+            .map(|(&x, &y)| Circle::new((x, y), 1, BLUE.filled())),
+    )?;
+
+    root.present()?;
+
+    Ok(())
 }
 
 #[cfg(test)]
