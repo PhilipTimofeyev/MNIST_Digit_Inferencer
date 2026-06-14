@@ -9,7 +9,7 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter};
 
 const EPSILON: f64 = 0.1;
-const N_TRAINING_SET: u32 = 30_000;
+const N_TRAINING_SET: u32 = 5_000;
 
 fn main() -> Result<()> {
     let Mnist {
@@ -216,8 +216,8 @@ fn score_scatterplot(x_values: Vec<f64>, y_values: Vec<f64>) -> Result<()> {
         .configure_mesh()
         .x_desc("Score")
         .y_desc("Digit (1) or Other (0)")
-        .x_label_offset(40)
-        .y_label_offset(40)
+        // .x_label_offset(40)
+        // .y_label_offset(40)
         .axis_desc_style(("sans-serif", 20, &BLACK))
         .draw()?;
 
