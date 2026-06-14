@@ -9,7 +9,7 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter};
 
 const EPSILON: f64 = 0.1;
-const N_TRAINING_SET: u32 = 5000;
+const N_TRAINING_SET: u32 = 30_000;
 
 fn main() -> Result<()> {
     let Mnist {
@@ -115,7 +115,7 @@ fn select_train_or_infer(
                 println!("{}", digit_to_train);
                 let weights = open_json()?;
 
-                digit_inference(tst_img, tst_lbl, weights, digit_to_train);
+                digit_inference(tst_img, tst_lbl, weights, digit_to_train)?;
             }
             _ => break,
         }
@@ -144,6 +144,9 @@ fn prepare_train_data(
 ) -> Result<(DMatrix<f64>, DVector<f64>)> {
     let train_data = DMatrix::from_row_slice(N_TRAINING_SET as usize, 784, &trn_img)
         .map(|pixel| if pixel as f64 > 0.0 { 1.0 } else { 0.0 });
+
+    // Add bias term in the form of a column of 1's
+    let train_data = train_data.insert_column(0, 1.0);
 
     let train_label = DVector::from_row_slice(&trn_lbl)
         .map(|digit| if digit == digit_to_train { 1.0 } else { 0.0 });
@@ -175,6 +178,8 @@ fn digit_inference(
 ) -> Result<()> {
     let test_data = DMatrix::from_row_slice(5000, 784, &tst_img)
         .map(|pixel| if pixel as f64 > 0.0 { 1.0 } else { 0.0 });
+
+    let test_data = test_data.insert_column(0, 1.0);
 
     let weights = DVector::from_row_slice(&weights.weights);
 
