@@ -10,6 +10,7 @@ use std::io::{BufReader, BufWriter};
 
 const EPSILON: f64 = 0.1;
 const N_TRAINING_SET: u32 = 5_000;
+const N_TESTING_SET: u32 = 100;
 
 fn main() -> Result<()> {
     let Mnist {
@@ -23,7 +24,7 @@ fn main() -> Result<()> {
         .label_format_digit()
         .training_set_length(N_TRAINING_SET)
         .validation_set_length(10)
-        .test_set_length(5000)
+        .test_set_length(N_TESTING_SET)
         .finalize();
 
     select_train_or_infer(&trn_img, &trn_lbl, &tst_img, &tst_lbl)?;
@@ -143,12 +144,13 @@ fn prepare_train_data(
     digit_to_train: u8,
 ) -> Result<(DMatrix<f64>, DVector<f64>)> {
     let train_data = DMatrix::from_row_slice(N_TRAINING_SET as usize, 784, &trn_img)
-        .map(|pixel| if pixel as f64 > 0.0 { 1.0 } else { 0.0 });
+        // .map(|pixel| if pixel as f64 > 0.0 { 1.0 } else{ 0.0 });
+        .map(|pixel| pixel as f64 / 255.0);
 
     // Add bias term in the form of a column of 1's
     let train_data = train_data.insert_column(0, 1.0);
 
-    let train_label = DVector::from_row_slice(&trn_lbl)
+    let train_label = DVector::from_row_slice(trn_lbl)
         .map(|digit| if digit == digit_to_train { 1.0 } else { 0.0 });
 
     Ok((train_data, train_label))
@@ -176,8 +178,9 @@ fn digit_inference(
     weights: Weights,
     trained_digit: u8,
 ) -> Result<()> {
-    let test_data = DMatrix::from_row_slice(5000, 784, &tst_img)
-        .map(|pixel| if pixel as f64 > 0.0 { 1.0 } else { 0.0 });
+    let test_data = DMatrix::from_row_slice(N_TESTING_SET as usize, 784, tst_img)
+        // .map(|pixel| if pixel as f64 > 0.0 { 1.0 } else { 0.0 });
+        .map(|pixel| pixel as f64 / 255.0);
 
     let test_data = test_data.insert_column(0, 1.0);
 
@@ -191,9 +194,26 @@ fn digit_inference(
         .map(|digit| if *digit == trained_digit { 1.0 } else { 0.0 })
         .collect();
 
-    score_scatterplot(x, y)?;
+    let total_scores = N_TESTING_SET;
 
-    // for i in 0..100 {
+    let mut num_correct = 0;
+    for i in 0..N_TESTING_SET as usize {
+        if scores[i] >= 0.5 && y[i] == 1.0 || scores[i] < 0.5 && y[i] == 0.0 {
+            num_correct += 1
+        } else {
+            // println!("digit: {}, \nscore: {}", y[i], scores[i]);
+        }
+    }
+
+    let percent_correct = num_correct as f32 / N_TESTING_SET as f32;
+
+    println!(
+        "Total scores: {}\n Number correct: {}\n Percent Correct: {}",
+        total_scores, num_correct, percent_correct
+    );
+    //
+    score_scatterplot(x, y)?;
+    // for i in 0..50 {
     //     println!("digit={} score={}", tst_lbl[i], scores[i]);
     // }
 
