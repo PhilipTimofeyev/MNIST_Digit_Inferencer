@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 
-const EPSILON: f64 = 0.1;
-const N_TRAINING_SET: u32 = 5000;
+const EPSILON: f64 = 1.0;
+const N_TRAINING_SET: u32 = 4000;
 const N_TESTING_SET: u32 = 10000;
 
 fn main() -> Result<()> {
@@ -66,6 +66,39 @@ fn svd_least_squares_lapack(x: &DMatrix<f64>, y: &DVector<f64>, digit: u8) -> We
     let solution = svd.vt.transpose() * trimmed_ut_y;
 
     Weights::new(&solution, digit)
+}
+
+#[derive(Debug)]
+struct F1 {
+    digit: u8,
+    tpos: f32,
+    tneg: f32,
+    fpos: f32,
+    fneg: f32,
+}
+
+impl F1 {
+    fn new(digit: u8) -> F1 {
+        F1 {
+            digit,
+            tpos: 0.0,
+            tneg: 0.0,
+            fpos: 0.0,
+            fneg: 0.0,
+        }
+    }
+
+    fn precision(&self) -> f32 {
+        self.tpos / (self.tpos + self.fpos)
+    }
+
+    fn recall(&self) -> f32 {
+        self.tpos / (self.tpos + self.fneg)
+    }
+
+    fn f1(&self) -> f32 {
+        2.0 * ((self.precision() * self.recall()) / (self.precision() + self.recall()))
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -161,7 +194,7 @@ fn prepare_train_data(
     trn_lbl: &[u8],
     digit_to_train: u8,
 ) -> Result<(DMatrix<f64>, DVector<f64>)> {
-    let train_data = DMatrix::from_row_slice(N_TRAINING_SET as usize, 784, &trn_img)
+    let train_data = DMatrix::from_row_slice(N_TRAINING_SET as usize, 784, trn_img)
         .map(|pixel| if pixel as f64 > 0.0 { 1.0 } else { 0.0 });
     // .map(|pixel| pixel as f64 / 255.0);
 
@@ -209,10 +242,10 @@ fn digit_inference(
     trained_digit: u8,
 ) -> Result<()> {
     let test_data = DMatrix::from_row_slice(N_TESTING_SET as usize, 784, tst_img)
-        .map(|pixel| if pixel as f64 > 0.0 { 1.0 } else { 0.0 });
-    // .map(|pixel| pixel as f64 / 255.0);
+        // .map(|pixel| if pixel as f64 > 0.0 { 1.0 } else { 0.0 });
+        .map(|pixel| pixel as f64 / 255.0);
 
-    let test_data = test_data.insert_column(0, 1.0);
+    // let test_data = test_data.insert_column(0, 1.0);
 
     let weights = DVector::from_row_slice(&weights.weights);
 
@@ -257,26 +290,69 @@ fn digit_inference_all(tst_img: &[u8], tst_lbl: &[u8], weights: Vec<Weights>) ->
 
     let test_data = test_data.insert_column(0, 1.0);
 
+    let mut digit_1_f1 = F1::new(1);
+
     let mut results: Vec<(u8, u8)> = vec![];
 
     for (i, row) in test_data.row_iter().enumerate() {
-        let (mut digit, mut max_score) = (0, 0.0);
+        let (mut digit, mut max_score) = (0, f64::NEG_INFINITY);
         for digit_weights in &weights {
             let weights = DVector::from_row_slice(&digit_weights.weights);
 
             let score = row.transpose().dot(&weights);
+
             if score > max_score {
                 max_score = score;
                 digit = digit_weights.digit;
             }
-            // println!("{:?}", score);
+            // println!(
+            //     "score: {:?} digit: {} actual: {}",
+            //     score, digit_weights.digit, tst_lbl[i],
+            // );
+            // if digit_1_f1.digit == digit_weights.digit {
+            //     if score >= 0.5 && tst_lbl[i] == digit_1_f1.digit {
+            //         digit_1_f1.tpos += 1.0;
+            //         // println!("tpos");
+            //     } else if score >= 0.5 && tst_lbl[i] != digit_1_f1.digit {
+            //         digit_1_f1.fpos += 1.0;
+            //         // println!("fpos");
+            //     } else if score < 0.5 && tst_lbl[i] == digit_1_f1.digit {
+            //         // println!("fneg");
+            //         digit_1_f1.fneg += 1.0;
+            //     } else if score < 0.5 && tst_lbl[i] != digit_1_f1.digit {
+            //         digit_1_f1.tneg += 1.0;
+            //         // println!("tneg");
+            //     };
+            // }
         }
+
+        if digit == digit_1_f1.digit && tst_lbl[i] == digit_1_f1.digit {
+            digit_1_f1.tpos += 1.0;
+            // println!("tpos");
+        } else if digit == digit_1_f1.digit && tst_lbl[i] != digit_1_f1.digit {
+            digit_1_f1.fpos += 1.0;
+            // println!("fpos");
+        } else if digit != digit_1_f1.digit && tst_lbl[i] == digit_1_f1.digit {
+            // println!("fneg");
+            digit_1_f1.fneg += 1.0;
+        } else {
+            digit_1_f1.tneg += 1.0;
+            // println!("tneg");
+        };
         results.push((tst_lbl[i], digit));
 
         // println!("{:?}", results);
         // println!("Digit {}, max score: {:?}", digit, max_score);
         // println!("Actual Digit: {}", tst_lbl[i]);
     }
+
+    println!(
+        "Digit: {}\nPrecision: {}\nRecall: {}\nF1: {}\n",
+        digit_1_f1.digit,
+        digit_1_f1.precision(),
+        digit_1_f1.recall(),
+        digit_1_f1.f1()
+    );
 
     let num_correct = results.iter().fold(
         0,
