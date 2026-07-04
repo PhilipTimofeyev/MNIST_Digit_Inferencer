@@ -9,7 +9,7 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter};
 
 const EPSILON: f64 = 1.0;
-const N_TRAINING_SET: u32 = 4000;
+const N_TRAINING_SET: u32 = 10000;
 const N_TESTING_SET: u32 = 10000;
 
 fn main() -> Result<()> {
@@ -290,9 +290,8 @@ fn digit_inference_all(tst_img: &[u8], tst_lbl: &[u8], weights: Vec<Weights>) ->
 
     let test_data = test_data.insert_column(0, 1.0);
 
-    let mut digit_1_f1 = F1::new(1);
-
     let mut results: Vec<(u8, u8)> = vec![];
+    let mut metrics: Vec<F1> = (0..10).map(F1::new).collect();
 
     for (i, row) in test_data.row_iter().enumerate() {
         let (mut digit, mut max_score) = (0, f64::NEG_INFINITY);
@@ -326,19 +325,31 @@ fn digit_inference_all(tst_img: &[u8], tst_lbl: &[u8], weights: Vec<Weights>) ->
             // }
         }
 
-        if digit == digit_1_f1.digit && tst_lbl[i] == digit_1_f1.digit {
-            digit_1_f1.tpos += 1.0;
-            // println!("tpos");
-        } else if digit == digit_1_f1.digit && tst_lbl[i] != digit_1_f1.digit {
-            digit_1_f1.fpos += 1.0;
-            // println!("fpos");
-        } else if digit != digit_1_f1.digit && tst_lbl[i] == digit_1_f1.digit {
-            // println!("fneg");
-            digit_1_f1.fneg += 1.0;
-        } else {
-            digit_1_f1.tneg += 1.0;
-            // println!("tneg");
-        };
+        for metric in &mut metrics {
+            if digit == metric.digit && tst_lbl[i] == metric.digit {
+                metric.tpos += 1.0;
+            } else if digit == metric.digit && tst_lbl[i] != metric.digit {
+                metric.fpos += 1.0;
+            } else if digit != metric.digit && tst_lbl[i] == metric.digit {
+                metric.fneg += 1.0;
+            } else {
+                metric.tneg += 1.0;
+            }
+        }
+
+        // if digit == digit_1_f1.digit && tst_lbl[i] == digit_1_f1.digit {
+        //     digit_1_f1.tpos += 1.0;
+        //     // println!("tpos");
+        // } else if digit == digit_1_f1.digit && tst_lbl[i] != digit_1_f1.digit {
+        //     digit_1_f1.fpos += 1.0;
+        //     // println!("fpos");
+        // } else if digit != digit_1_f1.digit && tst_lbl[i] == digit_1_f1.digit {
+        //     // println!("fneg");
+        //     digit_1_f1.fneg += 1.0;
+        // } else {
+        //     digit_1_f1.tneg += 1.0;
+        //     // println!("tneg");
+        // };
         results.push((tst_lbl[i], digit));
 
         // println!("{:?}", results);
@@ -346,13 +357,15 @@ fn digit_inference_all(tst_img: &[u8], tst_lbl: &[u8], weights: Vec<Weights>) ->
         // println!("Actual Digit: {}", tst_lbl[i]);
     }
 
-    println!(
-        "Digit: {}\nPrecision: {}\nRecall: {}\nF1: {}\n",
-        digit_1_f1.digit,
-        digit_1_f1.precision(),
-        digit_1_f1.recall(),
-        digit_1_f1.f1()
-    );
+    for digit in metrics {
+        println!(
+            "Digit: {}\nPrecision: {}\nRecall: {}\nF1: {}\n",
+            digit.digit,
+            digit.precision(),
+            digit.recall(),
+            digit.f1()
+        );
+    }
 
     let num_correct = results.iter().fold(
         0,
