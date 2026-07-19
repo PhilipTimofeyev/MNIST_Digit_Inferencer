@@ -103,6 +103,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5bd439b48f5425c9f4597141b52476358e05e08471bc30f4d1c2a1f4084d7c9f"
 dependencies = [
  "accelerate-src",
+ "openblas-src",
 ]
 
 [[package]]
@@ -720,6 +721,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b1bcb4a410d9e39126db6ef1b71814618d9f9c3db128e6db674a449cf6a8b668"
 dependencies = [
  "accelerate-src",
+ "openblas-src",
 ]
 
 [[package]]
