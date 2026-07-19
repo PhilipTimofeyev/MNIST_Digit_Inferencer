@@ -8,7 +8,7 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter};
 
 const EPSILON: f64 = 1.0;
-const N_TRAINING_SET: u32 = 1000;
+const N_TRAINING_SET: u32 = 10000;
 const N_TESTING_SET: u32 = 10000;
 
 fn main() -> Result<()> {
@@ -161,7 +161,7 @@ fn select_train_or_infer(
 
             2 => {
                 let weights = get_weights()?;
-                digit_inference_all(tst_img, tst_lbl, weights)?
+                digit_inference(tst_img, tst_lbl, weights)?
             }
             _ => break,
         }
@@ -239,7 +239,7 @@ fn get_weights() -> Result<Vec<Weights>> {
     Ok(weights)
 }
 
-fn digit_inference_all(tst_img: &[u8], tst_lbl: &[u8], weights: Vec<Weights>) -> Result<()> {
+fn digit_inference(tst_img: &[u8], tst_lbl: &[u8], weights: Vec<Weights>) -> Result<()> {
     let test_data = DMatrix::from_row_slice(N_TESTING_SET as usize, 784, tst_img)
         .map(|pixel| if pixel as f64 > 0.0 { 1.0 } else { 0.0 });
     // .map(|pixel| pixel as f64 / 255.0);
