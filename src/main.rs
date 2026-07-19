@@ -8,7 +8,7 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter};
 
 const EPSILON: f64 = 5.0;
-const N_TRAINING_SET: u32 = 10000;
+const N_TRAINING_SET: u32 = 1000;
 const N_TESTING_SET: u32 = 10000;
 
 fn main() -> Result<()> {
@@ -31,6 +31,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 fn svd_least_squares(x: &DMatrix<f64>, y: &DVector<f64>, digit: u8, epsilon: f64) -> Weights {
     let svd = SVD::new(x.clone(), true, true);
     let weights = svd.solve(y, epsilon).unwrap();
@@ -106,6 +107,7 @@ impl F1 {
 #[derive(Serialize, Deserialize, Debug)]
 struct Weights {
     digit: u8,
+    n_train: u32,
     rows: usize,
     cols: usize,
     weights: Vec<f64>,
@@ -113,12 +115,14 @@ struct Weights {
 
 impl Weights {
     fn new(vector: &DVector<f64>, digit: u8) -> Weights {
+        let n_train = N_TRAINING_SET;
         let rows = vector.nrows();
         let cols = vector.ncols();
         let weights = vector.data.as_vec().to_owned();
 
         Weights {
             digit,
+            n_train,
             rows,
             cols,
             weights,
