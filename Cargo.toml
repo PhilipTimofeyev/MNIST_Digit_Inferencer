@@ -9,8 +9,6 @@ approx = "0.5.1"
 dialoguer = { version = "0.12", features = ["fuzzy-select"] }
 mnist = "0.6.0"
 nalgebra = { version = "0.35", features = ["rkyv-serialize"] }
-# nalgebra-lapack = { version = "0.28.0", default-features = false, features = ["lapack-accelerate"] }
-# lapack-src = { version = "0.13", features = ["accelerate"] }
 ndarray = "0.17.2"
 plotters = "0.3.7"
 serde = { version = "1.0.228", features = ["derive"] }
