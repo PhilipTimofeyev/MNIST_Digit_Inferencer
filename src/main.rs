@@ -3,12 +3,13 @@ use dialoguer::FuzzySelect;
 use mnist::*;
 use nalgebra::{DMatrix, DVector, SVD};
 use plotters::prelude::*;
+use rfd::FileDialog;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 
 const EPSILON: f64 = 5.0;
-const N_TRAINING_SET: u32 = 1000;
+const N_TRAINING_SET: u32 = 5000;
 const N_TESTING_SET: u32 = 10000;
 
 fn main() -> Result<()> {
@@ -22,7 +23,6 @@ fn main() -> Result<()> {
         .base_path("data_sets/mnist/")
         .label_format_digit()
         .training_set_length(N_TRAINING_SET)
-        .validation_set_length(10)
         .test_set_length(N_TESTING_SET)
         .finalize();
 
@@ -107,7 +107,8 @@ impl F1 {
 #[derive(Serialize, Deserialize, Debug)]
 struct Weights {
     digit: u8,
-    n_train: u32,
+    n_train: Option<u32>,
+    epsilon: Option<f64>,
     rows: usize,
     cols: usize,
     weights: Vec<f64>,
@@ -115,7 +116,8 @@ struct Weights {
 
 impl Weights {
     fn new(vector: &DVector<f64>, digit: u8) -> Weights {
-        let n_train = N_TRAINING_SET;
+        let n_train = Some(N_TRAINING_SET);
+        let epsilon = Some(EPSILON);
         let rows = vector.nrows();
         let cols = vector.ncols();
         let weights = vector.data.as_vec().to_owned();
@@ -123,6 +125,7 @@ impl Weights {
         Weights {
             digit,
             n_train,
+            epsilon,
             rows,
             cols,
             weights,
@@ -174,6 +177,7 @@ fn select_train_or_infer(
 
 fn train_all_digits(trn_img: &[u8], trn_lbl: &[u8]) -> Result<()> {
     for i in 0..=9 {
+        println!("Training digit: {}", i);
         let (train_data, train_label) = prepare_train_data(trn_img, trn_lbl, i)?;
         let weights = svd_least_squares_lapack(&train_data, &train_label, i, EPSILON);
         save_json(weights)?
@@ -213,17 +217,29 @@ fn prepare_train_data(
     Ok((train_data, train_label))
 }
 
+// Saves weights to a new folder with the name structure of "weights_N TRAINING SIZE_EPSILON"
 fn save_json(weights: Weights) -> Result<()> {
-    let filename = format!("weights/{} weights.json", { weights.digit });
+    let path = std::path::Path::new("./weights");
+    std::fs::create_dir_all(path)?;
+
+    let weights_folder = format!("weights_{}_{}", N_TRAINING_SET, EPSILON);
+    let weights_folder = path.join(weights_folder);
+    std::fs::create_dir_all(&weights_folder)?;
+
+    let filename = format!("{}/{} weights.json", weights_folder.display(), {
+        weights.digit
+    });
     let file = File::create(filename).context("Failed to create file at path")?;
     let mut writer = BufWriter::new(file);
+
     serde_json::to_writer_pretty(&mut writer, &weights)
         .context("Failed to serialize weights into JSON format")?;
+
     Ok(())
 }
 
-fn open_json(digit: u8) -> Result<Weights> {
-    let filename = format!("weights/{} weights.json", digit);
+fn open_json(digit: u8, path: &std::path::Path) -> Result<Weights> {
+    let filename = format!("{}/{} weights.json", path.display(), digit);
     let file = File::open(filename)?;
     let weights_json = BufReader::new(file);
     let weights =
@@ -233,9 +249,20 @@ fn open_json(digit: u8) -> Result<Weights> {
 
 fn get_weights() -> Result<Vec<Weights>> {
     let mut weights: Vec<Weights> = vec![];
-    for i in 0..=9 {
-        let weight = open_json(i)?;
-        weights.push(weight);
+    let folder = FileDialog::new()
+        .set_title("Select a folder to open in terminal")
+        .pick_folder();
+
+    match folder {
+        Some(path) => {
+            for i in 0..=9 {
+                let weight = open_json(i, path.as_path())?;
+                weights.push(weight);
+            }
+        }
+        None => {
+            eprintln!("No folder selected.");
+        }
     }
 
     Ok(weights)
