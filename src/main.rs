@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 
-const EPSILON: f64 = 1.0;
+const EPSILON: f64 = 5.0;
 const N_TRAINING_SET: u32 = 10000;
 const N_TESTING_SET: u32 = 10000;
 
@@ -92,15 +92,15 @@ impl F1 {
         }
     }
 
-    fn precision(&self) -> f32 {
-        self.tpos / (self.tpos + self.fpos)
+    fn precision(&self) -> f64 {
+        (self.tpos / (self.tpos + self.fpos)) as f64
     }
 
-    fn recall(&self) -> f32 {
-        self.tpos / (self.tpos + self.fneg)
+    fn recall(&self) -> f64 {
+        (self.tpos / (self.tpos + self.fneg)) as f64
     }
 
-    fn f1(&self) -> f32 {
+    fn f1(&self) -> f64 {
         2.0 * ((self.precision() * self.recall()) / (self.precision() + self.recall()))
     }
 }
@@ -288,7 +288,7 @@ fn digit_inference(tst_img: &[u8], tst_lbl: &[u8], weights: Vec<Weights>) -> Res
     }
 
     let average_f1 = metrics.iter().fold(0.0, |acc, digit| acc + digit.f1());
-    let average_f1 = average_f1 / metrics.len() as f32;
+    let average_f1 = average_f1 / metrics.len() as f64;
 
     let num_correct = results.iter().fold(
         0,
@@ -296,6 +296,8 @@ fn digit_inference(tst_img: &[u8], tst_lbl: &[u8], weights: Vec<Weights>) -> Res
             if digits.0 == digits.1 { acc + 1 } else { acc }
         },
     );
+
+    f1_scatterplot(metrics)?;
 
     let total_scores = N_TESTING_SET;
 
@@ -309,33 +311,46 @@ fn digit_inference(tst_img: &[u8], tst_lbl: &[u8], weights: Vec<Weights>) -> Res
     Ok(())
 }
 
-// Creates a scatterplot where scores of whether the image is a specific digit are the x-axis, and
-// whether is was the digit (1) or a different digit (0), on the y-axis
-fn _score_scatterplot(x_values: Vec<f64>, y_values: Vec<f64>) -> Result<()> {
-    let root = BitMapBackend::new("digit_scatterplot.png", (1280, 960)).into_drawing_area();
+// Creates a scatterplot where
+// - precision of digit is the x-axis
+// - recall is x-axis
+// - radius of point is F1 score
+
+fn f1_scatterplot(metrics: Vec<F1>) -> Result<()> {
+    let root = BitMapBackend::new("F1_scatterplot.png", (1920, 1080)).into_drawing_area();
     root.fill(&WHITE)?;
     let mut chart = ChartBuilder::on(&root)
-        .caption("Digit Scatterplot", ("sans-serif", 50).into_font())
-        .margin(5)
-        .x_label_area_size(45)
-        .y_label_area_size(45)
-        .build_cartesian_2d(-1f64..2f64, -1f64..2f64)?;
+        .caption("Digit Classification Performance", ("sans-serif", 30))
+        .margin(30)
+        .x_label_area_size(40)
+        .y_label_area_size(40)
+        .build_cartesian_2d(0f64..1.0, 0f64..1.0)?;
 
     chart
         .configure_mesh()
-        .x_desc("Score")
-        .y_desc("Digit (1) or Other (0)")
-        // .x_label_offset(40)
-        // .y_label_offset(40)
-        .axis_desc_style(("sans-serif", 20, &BLACK))
+        .x_desc("Precision")
+        .y_desc("Recall")
+        .axis_desc_style(("sans-serif", 20).into_font())
+        .label_style(("sans-serif", 12).into_font())
         .draw()?;
 
-    chart.draw_series(
-        x_values
-            .iter()
-            .zip(y_values.iter())
-            .map(|(&x, &y)| Circle::new((x, y), 1, BLUE.filled())),
-    )?;
+    chart.draw_series(metrics.iter().map(|m| {
+        Circle::new(
+            (m.precision(), m.recall()),
+            (m.f1() * 30.0) as i32,
+            BLACK.filled(),
+        )
+    }))?;
+
+    chart.draw_series(metrics.iter().map(|m| {
+        Text::new(
+            format!("{}", m.digit),
+            (m.precision() - 0.003, m.recall() + 0.007),
+            ("sans-serif", 20)
+                .into_font()
+                .color(&RGBColor(255, 255, 255)),
+        )
+    }))?;
 
     root.present()?;
 
