@@ -76,7 +76,6 @@ fn svd_least_squares_lapack(
 struct F1 {
     digit: u8,
     tpos: f32,
-    tneg: f32,
     fpos: f32,
     fneg: f32,
 }
@@ -86,7 +85,6 @@ impl F1 {
         F1 {
             digit,
             tpos: 0.0,
-            tneg: 0.0,
             fpos: 0.0,
             fneg: 0.0,
         }
@@ -269,8 +267,6 @@ fn digit_inference(tst_img: &[u8], tst_lbl: &[u8], weights: Vec<Weights>) -> Res
                 metric.fpos += 1.0;
             } else if digit != metric.digit && tst_lbl[i] == metric.digit {
                 metric.fneg += 1.0;
-            } else {
-                metric.tneg += 1.0;
             }
         }
 
@@ -382,5 +378,23 @@ mod tests {
         let result = svd_least_squares_lapack(&x, &y, digit, epsilon);
 
         assert_relative_eq!(result.weights[..], &vec![2.5, -1.0], epsilon = epsilon);
+    }
+
+    #[test]
+    fn test_f1() {
+        let f1_example = F1 {
+            digit: 0,
+            tpos: 8.0,
+            fpos: 7.0,
+            fneg: 2.0,
+        };
+
+        let precision = f1_example.precision();
+        let recall = f1_example.recall();
+        let f1 = f1_example.f1();
+
+        assert_relative_eq!(precision, 0.533, epsilon = 0.001);
+        assert_relative_eq!(recall, 0.80, epsilon = 0.001);
+        assert_relative_eq!(f1, 0.64, epsilon = 0.001);
     }
 }
