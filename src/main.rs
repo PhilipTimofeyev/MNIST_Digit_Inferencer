@@ -1,15 +1,14 @@
 use anyhow::{Context, Result};
 use dialoguer::FuzzySelect;
 use mnist::*;
-use nalgebra::{DMatrix, DVector};
-use nalgebra_lapack::SVD;
+use nalgebra::{DMatrix, DVector, SVD};
 use plotters::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 
 const EPSILON: f64 = 1.0;
-const N_TRAINING_SET: u32 = 10000;
+const N_TRAINING_SET: u32 = 1000;
 const N_TESTING_SET: u32 = 10000;
 
 fn main() -> Result<()> {
@@ -32,15 +31,20 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-// fn svd_least_squares(x: &DMatrix<f64>, y: &DVector<f64>) -> Weights {
-//     let svd = x.clone().svd(true, true);
-//     let weights = svd.solve(y, EPSILON).unwrap();
-//
-//     Weights::new(&weights)
-// }
+fn svd_least_squares(x: &DMatrix<f64>, y: &DVector<f64>, digit: u8, epsilon: f64) -> Weights {
+    let svd = SVD::new(x.clone(), true, true);
+    let weights = svd.solve(y, epsilon).unwrap();
 
-fn svd_least_squares_lapack(x: &DMatrix<f64>, y: &DVector<f64>, digit: u8) -> Weights {
-    let svd = SVD::new(x.clone()).unwrap();
+    Weights::new(&weights, digit)
+}
+
+fn svd_least_squares_lapack(
+    x: &DMatrix<f64>,
+    y: &DVector<f64>,
+    digit: u8,
+    epsilon: f64,
+) -> Weights {
+    let svd = nalgebra_lapack::SVD::new(x.clone()).unwrap();
 
     // Equation to solve is w = V * sigma^-1 * U^T * y
 
@@ -55,7 +59,7 @@ fn svd_least_squares_lapack(x: &DMatrix<f64>, y: &DVector<f64>, digit: u8) -> We
     // This filters out values that would cause a division by zero, and divides (U^T*y) by the
     // singular values
     for (trimmed_i, singular_i) in trimmed_ut_y.iter_mut().zip(svd.singular_values.iter()) {
-        if *singular_i > EPSILON {
+        if *singular_i > epsilon {
             *trimmed_i /= *singular_i;
         } else {
             *trimmed_i = 0.0;
@@ -130,9 +134,14 @@ fn select_train_or_infer(
     tst_img: &[u8],
     tst_lbl: &[u8],
 ) -> Result<()> {
-    let mut digit_to_train = 0;
+    let mut digit_to_train;
     loop {
-        let items = vec!["Train", "Train All", "Inference", "Inference All", "Exit"];
+        let items = vec![
+            "Train Single Digit",
+            "Train All Digits",
+            "Inference",
+            "Exit",
+        ];
         let selection = FuzzySelect::new()
             .with_prompt("Select and option:")
             .items(&items)
@@ -144,18 +153,13 @@ fn select_train_or_infer(
                 let (train_data, train_label) =
                     prepare_train_data(trn_img, trn_lbl, digit_to_train)?;
                 println!("Training digit: {}", digit_to_train);
-                let weights = svd_least_squares_lapack(&train_data, &train_label, digit_to_train);
+                let weights =
+                    svd_least_squares_lapack(&train_data, &train_label, digit_to_train, EPSILON);
                 save_json(weights)?
             }
             1 => train_all_digits(trn_img, trn_lbl)?,
-            2 => {
-                println!("{}", digit_to_train);
-                //FIX THIS WITH ARGUMENT NONE
-                let weights = open_json(0)?;
 
-                digit_inference(tst_img, tst_lbl, weights, digit_to_train)?;
-            }
-            3 => {
+            2 => {
                 let weights = get_weights()?;
                 digit_inference_all(tst_img, tst_lbl, weights)?
             }
@@ -169,7 +173,7 @@ fn select_train_or_infer(
 fn train_all_digits(trn_img: &[u8], trn_lbl: &[u8]) -> Result<()> {
     for i in 0..=9 {
         let (train_data, train_label) = prepare_train_data(trn_img, trn_lbl, i)?;
-        let weights = svd_least_squares_lapack(&train_data, &train_label, i);
+        let weights = svd_least_squares_lapack(&train_data, &train_label, i, EPSILON);
         save_json(weights)?
     }
 
@@ -235,54 +239,6 @@ fn get_weights() -> Result<Vec<Weights>> {
     Ok(weights)
 }
 
-fn digit_inference(
-    tst_img: &[u8],
-    tst_lbl: &[u8],
-    weights: Weights,
-    trained_digit: u8,
-) -> Result<()> {
-    let test_data = DMatrix::from_row_slice(N_TESTING_SET as usize, 784, tst_img)
-        // .map(|pixel| if pixel as f64 > 0.0 { 1.0 } else { 0.0 });
-        .map(|pixel| pixel as f64 / 255.0);
-
-    // let test_data = test_data.insert_column(0, 1.0);
-
-    let weights = DVector::from_row_slice(&weights.weights);
-
-    let scores = &test_data * &weights;
-    let x: Vec<f64> = scores.iter().cloned().collect();
-
-    let y: Vec<f64> = tst_lbl
-        .iter()
-        .map(|digit| if *digit == trained_digit { 1.0 } else { 0.0 })
-        .collect();
-
-    let total_scores = N_TESTING_SET;
-
-    let mut num_correct = 0;
-    for i in 0..N_TESTING_SET as usize {
-        if scores[i] >= 0.5 && y[i] == 1.0 || scores[i] < 0.5 && y[i] == 0.0 {
-            num_correct += 1
-        } else {
-            // println!("digit: {}, \nscore: {}", y[i], scores[i]);
-        }
-    }
-
-    let percent_correct = (num_correct as f32 / N_TESTING_SET as f32) * 100.0;
-
-    println!(
-        "Total scores: {}\n Number correct: {}\n Percent Correct: {:.2}%",
-        total_scores, num_correct, percent_correct
-    );
-    //
-    score_scatterplot(x, y)?;
-    // for i in 0..50 {
-    //     println!("digit={} score={}", tst_lbl[i], scores[i]);
-    // }
-
-    Ok(())
-}
-
 fn digit_inference_all(tst_img: &[u8], tst_lbl: &[u8], weights: Vec<Weights>) -> Result<()> {
     let test_data = DMatrix::from_row_slice(N_TESTING_SET as usize, 784, tst_img)
         .map(|pixel| if pixel as f64 > 0.0 { 1.0 } else { 0.0 });
@@ -304,25 +260,6 @@ fn digit_inference_all(tst_img: &[u8], tst_lbl: &[u8], weights: Vec<Weights>) ->
                 max_score = score;
                 digit = digit_weights.digit;
             }
-            // println!(
-            //     "score: {:?} digit: {} actual: {}",
-            //     score, digit_weights.digit, tst_lbl[i],
-            // );
-            // if digit_1_f1.digit == digit_weights.digit {
-            //     if score >= 0.5 && tst_lbl[i] == digit_1_f1.digit {
-            //         digit_1_f1.tpos += 1.0;
-            //         // println!("tpos");
-            //     } else if score >= 0.5 && tst_lbl[i] != digit_1_f1.digit {
-            //         digit_1_f1.fpos += 1.0;
-            //         // println!("fpos");
-            //     } else if score < 0.5 && tst_lbl[i] == digit_1_f1.digit {
-            //         // println!("fneg");
-            //         digit_1_f1.fneg += 1.0;
-            //     } else if score < 0.5 && tst_lbl[i] != digit_1_f1.digit {
-            //         digit_1_f1.tneg += 1.0;
-            //         // println!("tneg");
-            //     };
-            // }
         }
 
         for metric in &mut metrics {
@@ -337,27 +274,10 @@ fn digit_inference_all(tst_img: &[u8], tst_lbl: &[u8], weights: Vec<Weights>) ->
             }
         }
 
-        // if digit == digit_1_f1.digit && tst_lbl[i] == digit_1_f1.digit {
-        //     digit_1_f1.tpos += 1.0;
-        //     // println!("tpos");
-        // } else if digit == digit_1_f1.digit && tst_lbl[i] != digit_1_f1.digit {
-        //     digit_1_f1.fpos += 1.0;
-        //     // println!("fpos");
-        // } else if digit != digit_1_f1.digit && tst_lbl[i] == digit_1_f1.digit {
-        //     // println!("fneg");
-        //     digit_1_f1.fneg += 1.0;
-        // } else {
-        //     digit_1_f1.tneg += 1.0;
-        //     // println!("tneg");
-        // };
         results.push((tst_lbl[i], digit));
-
-        // println!("{:?}", results);
-        // println!("Digit {}, max score: {:?}", digit, max_score);
-        // println!("Actual Digit: {}", tst_lbl[i]);
     }
 
-    for digit in metrics {
+    for digit in &metrics {
         println!(
             "Digit: {}\nPrecision: {}\nRecall: {}\nF1: {}\n",
             digit.digit,
@@ -367,6 +287,9 @@ fn digit_inference_all(tst_img: &[u8], tst_lbl: &[u8], weights: Vec<Weights>) ->
         );
     }
 
+    let average_f1 = metrics.iter().fold(0.0, |acc, digit| acc + digit.f1());
+    let average_f1 = average_f1 / metrics.len() as f32;
+
     let num_correct = results.iter().fold(
         0,
         |acc: u32, digits| {
@@ -374,45 +297,21 @@ fn digit_inference_all(tst_img: &[u8], tst_lbl: &[u8], weights: Vec<Weights>) ->
         },
     );
 
-    // let weights = DVector::from_row_slice(&weights.weights);
-    //
-    // let scores = &test_data * &weights;
-    // let x: Vec<f64> = scores.iter().cloned().collect();
-    //
-    // let y: Vec<f64> = tst_lbl
-    //     .iter()
-    //     .map(|digit| if *digit == trained_digit { 1.0 } else { 0.0 })
-    //     .collect();
-    //
     let total_scores = N_TESTING_SET;
-    //
-    // let mut num_correct = 0;
-    // for i in 0..N_TESTING_SET as usize {
-    //     if scores[i] >= 0.5 && y[i] == 1.0 || scores[i] < 0.5 && y[i] == 0.0 {
-    //         num_correct += 1
-    //     } else {
-    //         // println!("digit: {}, \nscore: {}", y[i], scores[i]);
-    //     }
-    // }
-    //
+
     let percent_correct = (num_correct as f32 / N_TESTING_SET as f32) * 100.0;
-    //
+
     println!(
-        "Total scores: {}\n Number correct: {}\n Percent Correct: {:.2}%",
-        total_scores, num_correct, percent_correct
+        "Number of Tests: {}\n Number correct: {}\n Percent Correct: {:.2}%\n Average F1: {}",
+        total_scores, num_correct, percent_correct, average_f1
     );
-    // //
-    // score_scatterplot(x, y)?;
-    // for i in 0..50 {
-    //     println!("digit={} score={}", tst_lbl[i], scores[i]);
-    // }
 
     Ok(())
 }
 
 // Creates a scatterplot where scores of whether the image is a specific digit are the x-axis, and
 // whether is was the digit (1) or a different digit (0), on the y-axis
-fn score_scatterplot(x_values: Vec<f64>, y_values: Vec<f64>) -> Result<()> {
+fn _score_scatterplot(x_values: Vec<f64>, y_values: Vec<f64>) -> Result<()> {
     let root = BitMapBackend::new("digit_scatterplot.png", (1280, 960)).into_drawing_area();
     root.fill(&WHITE)?;
     let mut chart = ChartBuilder::on(&root)
@@ -448,21 +347,25 @@ mod tests {
     use super::*;
     use approx::assert_relative_eq;
 
-    // #[test]
-    // fn test_svd_least_squares() {
-    //     let x = DMatrix::<f64>::from_row_slice(3, 2, &[1.0, 1.0, 2.0, 1.0, 3.0, 1.0]);
-    //     let y = DVector::<f64>::from_vec(vec![2.0, 3.0, 7.0]);
-    //     let result = svd_least_squares(&x, &y);
-    //
-    //     assert_relative_eq!(result.weights[..], &vec![2.5, -1.0], epsilon = 0.0001);
-    // }
+    #[test]
+    fn test_svd_least_squares() {
+        let x = DMatrix::<f64>::from_row_slice(3, 2, &[1.0, 1.0, 2.0, 1.0, 3.0, 1.0]);
+        let y = DVector::<f64>::from_vec(vec![2.0, 3.0, 7.0]);
+        let digit = 0;
+        let epsilon = 1e-12;
+        let result = svd_least_squares(&x, &y, digit, epsilon);
+
+        assert_relative_eq!(result.weights[..], &vec![2.5, -1.0], epsilon = epsilon);
+    }
 
     #[test]
     fn test_svd_least_squares_lapack() {
         let x = DMatrix::<f64>::from_row_slice(3, 2, &[1.0, 1.0, 2.0, 1.0, 3.0, 1.0]);
         let y = DVector::<f64>::from_vec(vec![2.0, 3.0, 7.0]);
-        let result = svd_least_squares_lapack(&x, &y, 0);
+        let digit = 0;
+        let epsilon = 1e-12;
+        let result = svd_least_squares_lapack(&x, &y, digit, epsilon);
 
-        assert_relative_eq!(result.weights[..], &vec![2.5, -1.0], epsilon = 0.0001);
+        assert_relative_eq!(result.weights[..], &vec![2.5, -1.0], epsilon = epsilon);
     }
 }
