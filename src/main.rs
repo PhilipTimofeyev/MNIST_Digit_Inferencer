@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use dialoguer::FuzzySelect;
+use faer::{Col, Mat, MatRef};
 use mnist::*;
 use nalgebra::{DMatrix, DVector, SVD};
 use plotters::prelude::*;
@@ -9,7 +10,7 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter};
 
 const EPSILON: f64 = 1.0;
-const N_TRAINING_SET: u32 = 10000;
+const N_TRAINING_SET: u32 = 1000;
 const N_TESTING_SET: u32 = 10000;
 
 fn main() -> Result<()> {
@@ -36,7 +37,16 @@ fn svd_least_squares(x: &DMatrix<f64>, y: &DVector<f64>, digit: u8, epsilon: f64
     let svd = SVD::new(x.clone(), true, true);
     let weights = svd.solve(y, epsilon).unwrap();
 
-    Weights::new(&weights, digit)
+    Weights::new(weights.as_slice(), digit)
+}
+
+fn svd_least_squares_faer(matrix: Mat<f64>, vector: Col<f64>, digit: u8) -> Weights {
+    let svd = matrix.thin_svd().unwrap();
+    let pseudo_inverse = svd.pseudoinverse();
+    let solution = pseudo_inverse * vector;
+    let solution: Vec<f64> = solution.iter().copied().collect();
+
+    Weights::new(solution.as_slice(), digit)
 }
 
 fn svd_least_squares_lapack(
@@ -53,7 +63,7 @@ fn svd_least_squares_lapack(
 
     // Since the sigma matrix is comprised of singular values of A^T*A, it will have a multiplicity
     // of the number of rows (784 in the case of the MNIST data set). Beyond those rows the values
-    // will be zero, so to save time on computation, the ut_y matrix can be trimmed down to 784 x 1,
+    // will be zero, so to save time on computation, the ut_y matrix can be trimmed down to 785 x 1,
     // since those values would be multiplied by zero anyway.
     let mut trimmed_ut_y = ut_y.rows(0, svd.singular_values.len()).into_owned();
 
@@ -70,7 +80,7 @@ fn svd_least_squares_lapack(
     // Finally multiply by V to get the least squares solution
     let solution = svd.vt.transpose() * trimmed_ut_y;
 
-    Weights::new(&solution, digit)
+    Weights::new(solution.as_slice(), digit)
 }
 
 #[derive(Debug)]
@@ -113,25 +123,25 @@ struct Weights {
     digit: u8,
     n_train: Option<u32>,
     epsilon: Option<f64>,
-    rows: usize,
-    cols: usize,
+    // rows: usize,
+    // cols: usize,
     weights: Vec<f64>,
 }
 
 impl Weights {
-    fn new(vector: &DVector<f64>, digit: u8) -> Weights {
+    fn new(vector: &[f64], digit: u8) -> Weights {
         let n_train = Some(N_TRAINING_SET);
         let epsilon = Some(EPSILON);
-        let rows = vector.nrows();
-        let cols = vector.ncols();
-        let weights = vector.data.as_vec().to_owned();
+        // let rows = vector.nrows();
+        // let cols = vector.ncols();
+        let weights = vector.to_owned();
 
         Weights {
             digit,
             n_train,
             epsilon,
-            rows,
-            cols,
+            // rows,
+            // cols,
             weights,
         }
     }
@@ -159,14 +169,13 @@ fn select_train_or_infer(
         match selection {
             0 => {
                 digit_to_train = select_digit_to_train()?;
-                let (train_data, train_label) =
-                    prepare_train_data(trn_img, trn_lbl, digit_to_train)?;
-                println!("Training digit: {}", digit_to_train);
-                let weights =
-                    svd_least_squares_lapack(&train_data, &train_label, digit_to_train, EPSILON);
-                save_json(weights)?
+                let method = select_training_method()?;
+                train_single_digit(trn_img, trn_lbl, digit_to_train, method)?;
             }
-            1 => train_all_digits(trn_img, trn_lbl)?,
+            1 => {
+                let method = select_training_method()?;
+                train_all_digits(trn_img, trn_lbl, method)?;
+            }
 
             2 => {
                 let weights = get_weights()?;
@@ -179,13 +188,45 @@ fn select_train_or_infer(
     Ok(())
 }
 
-fn train_all_digits(trn_img: &[u8], trn_lbl: &[u8]) -> Result<()> {
+enum Method {
+    Lapack,
+    Faer,
+}
+
+fn train_all_digits(trn_img: &[u8], trn_lbl: &[u8], method: Method) -> Result<()> {
     for i in 0..=9 {
         println!("Training digit: {}", i);
-        let (train_data, train_label) = prepare_train_data(trn_img, trn_lbl, i)?;
-        let weights = svd_least_squares_lapack(&train_data, &train_label, i, EPSILON);
-        save_json(weights)?
+
+        let weights = match method {
+            Method::Lapack => {
+                let (train_data, train_label) = prepare_train_data(trn_img, trn_lbl, i)?;
+                svd_least_squares_lapack(&train_data, &train_label, i, EPSILON)
+            }
+            Method::Faer => {
+                let (train_data, train_label) = prepare_train_data_faer(trn_img, trn_lbl, i)?;
+                svd_least_squares_faer(train_data, train_label, i)
+            }
+        };
+        save_json(weights)?;
     }
+
+    Ok(())
+}
+
+fn train_single_digit(trn_img: &[u8], trn_lbl: &[u8], digit: u8, method: Method) -> Result<()> {
+    println!("Training digit: {}", digit);
+
+    let weights = match method {
+        Method::Lapack => {
+            let (train_data, train_label) = prepare_train_data(trn_img, trn_lbl, digit)?;
+            svd_least_squares_lapack(&train_data, &train_label, digit, EPSILON)
+        }
+        Method::Faer => {
+            let (train_data, train_label) = prepare_train_data_faer(trn_img, trn_lbl, digit)?;
+            svd_least_squares_faer(train_data, train_label, digit)
+        }
+    };
+    save_json(weights)?;
 
     Ok(())
 }
@@ -203,6 +244,20 @@ fn select_digit_to_train() -> Result<u8> {
     Ok(digit)
 }
 
+fn select_training_method() -> Result<Method> {
+    let items = vec!["Faer SVD", "Lapack SVD"];
+    let selection = FuzzySelect::new()
+        .with_prompt("Select and option:")
+        .items(&items)
+        .interact()?;
+
+    match selection {
+        0 => Ok(Method::Faer),
+        1 => Ok(Method::Lapack),
+        _ => todo!(),
+    }
+}
+
 fn prepare_train_data(
     trn_img: &[u8],
     trn_lbl: &[u8],
@@ -217,6 +272,25 @@ fn prepare_train_data(
 
     let train_label = DVector::from_row_slice(trn_lbl)
         .map(|digit| if digit == digit_to_train { 1.0 } else { 0.0 });
+
+    Ok((train_data, train_label))
+}
+
+fn prepare_train_data_faer(
+    trn_img: &[u8],
+    trn_lbl: &[u8],
+    digit_to_train: u8,
+) -> Result<(Mat<f64>, Col<f64>)> {
+    let train_data = MatRef::from_row_major_slice(trn_img, N_TRAINING_SET as usize, 784)
+        .map(|pixel| if *pixel > 0 { 1.0 } else { 0.0 });
+
+    // Add bias term in the form of a column of 1's
+    let bias_col = Mat::from_fn(train_data.nrows(), 1, |_, _| 1.0);
+
+    let train_data = faer::concat![[bias_col, train_data]];
+
+    let train_label = Col::from_fn(N_TRAINING_SET as usize, |i| trn_lbl[i])
+        .map(|digit| if *digit == digit_to_train { 1.0 } else { 0.0 });
 
     Ok((train_data, train_label))
 }
@@ -406,6 +480,7 @@ fn f1_scatterplot(metrics: Vec<F1>) -> Result<()> {
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
+    use faer::{Col, MatRef};
 
     #[test]
     fn test_svd_least_squares() {
@@ -427,6 +502,19 @@ mod tests {
         let result = svd_least_squares_lapack(&x, &y, digit, epsilon);
 
         assert_relative_eq!(result.weights[..], &vec![2.5, -1.0], epsilon = epsilon);
+    }
+
+    #[test]
+    fn test_svd_least_squares_faer() {
+        let x = [1.0, 1.0, 2.0, 1.0, 3.0, 1.0];
+        let matrix = MatRef::from_row_major_slice(&x, 3, 2).to_owned();
+        // let matrix = Mat::from_fn(3, 2, |i, j| x[i * 3 + j]);
+        let y = [2.0, 3.0, 7.0];
+        let vector = Col::from_fn(3, |i| y[i]);
+        let digit = 0;
+
+        let weights = svd_least_squares_faer(matrix, vector, digit).weights;
+        assert_relative_eq!(weights[..], &vec![2.5, -1.0], epsilon = 0.001);
     }
 
     #[test]
