@@ -10,7 +10,7 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter};
 
 const EPSILON: f64 = 1.0;
-const N_TRAINING_SET: u32 = 1000;
+const N_TRAINING_SET: u32 = 10000;
 const N_TESTING_SET: u32 = 10000;
 
 fn main() -> Result<()> {
@@ -123,8 +123,6 @@ struct Weights {
     digit: u8,
     n_train: Option<u32>,
     epsilon: Option<f64>,
-    // rows: usize,
-    // cols: usize,
     weights: Vec<f64>,
 }
 
@@ -132,16 +130,12 @@ impl Weights {
     fn new(vector: &[f64], digit: u8) -> Weights {
         let n_train = Some(N_TRAINING_SET);
         let epsilon = Some(EPSILON);
-        // let rows = vector.nrows();
-        // let cols = vector.ncols();
         let weights = vector.to_owned();
 
         Weights {
             digit,
             n_train,
             epsilon,
-            // rows,
-            // cols,
             weights,
         }
     }
@@ -199,7 +193,7 @@ fn train_all_digits(trn_img: &[u8], trn_lbl: &[u8], method: Method) -> Result<()
 
         let weights = match method {
             Method::Lapack => {
-                let (train_data, train_label) = prepare_train_data(trn_img, trn_lbl, i)?;
+                let (train_data, train_label) = prepare_train_data_nalgebra(trn_img, trn_lbl, i)?;
                 svd_least_squares_lapack(&train_data, &train_label, i, EPSILON)
             }
             Method::Faer => {
@@ -218,7 +212,7 @@ fn train_single_digit(trn_img: &[u8], trn_lbl: &[u8], digit: u8, method: Method)
 
     let weights = match method {
         Method::Lapack => {
-            let (train_data, train_label) = prepare_train_data(trn_img, trn_lbl, digit)?;
+            let (train_data, train_label) = prepare_train_data_nalgebra(trn_img, trn_lbl, digit)?;
             svd_least_squares_lapack(&train_data, &train_label, digit, EPSILON)
         }
         Method::Faer => {
@@ -258,7 +252,7 @@ fn select_training_method() -> Result<Method> {
     }
 }
 
-fn prepare_train_data(
+fn prepare_train_data_nalgebra(
     trn_img: &[u8],
     trn_lbl: &[u8],
     digit_to_train: u8,
@@ -283,6 +277,7 @@ fn prepare_train_data_faer(
 ) -> Result<(Mat<f64>, Col<f64>)> {
     let train_data = MatRef::from_row_major_slice(trn_img, N_TRAINING_SET as usize, 784)
         .map(|pixel| if *pixel > 0 { 1.0 } else { 0.0 });
+    // .map(|pixel| pixel as f64 / 255.0);
 
     // Add bias term in the form of a column of 1's
     let bias_col = Mat::from_fn(train_data.nrows(), 1, |_, _| 1.0);
