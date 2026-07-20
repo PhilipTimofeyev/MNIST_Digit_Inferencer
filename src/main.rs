@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 
-const EPSILON: f64 = 5.0;
-const N_TRAINING_SET: u32 = 5000;
+const EPSILON: f64 = 1.0;
+const N_TRAINING_SET: u32 = 790;
 const N_TESTING_SET: u32 = 10000;
 
 fn main() -> Result<()> {
@@ -76,15 +76,19 @@ fn svd_least_squares_lapack(
 #[derive(Debug)]
 struct F1 {
     digit: u8,
+    n_train: u32,
+    epsilon: f64,
     tpos: f32,
     fpos: f32,
     fneg: f32,
 }
 
 impl F1 {
-    fn new(digit: u8) -> F1 {
+    fn new(digit: u8, n_train: u32, epsilon: f64) -> F1 {
         F1 {
             digit,
+            n_train,
+            epsilon,
             tpos: 0.0,
             fpos: 0.0,
             fneg: 0.0,
@@ -275,8 +279,12 @@ fn digit_inference(tst_img: &[u8], tst_lbl: &[u8], weights: Vec<Weights>) -> Res
 
     let test_data = test_data.insert_column(0, 1.0);
 
+    let n_train = weights.first().unwrap().n_train.unwrap();
+    let epsilon = weights.first().unwrap().epsilon.unwrap();
     let mut results: Vec<(u8, u8)> = vec![];
-    let mut metrics: Vec<F1> = (0..10).map(F1::new).collect();
+    let mut metrics: Vec<F1> = (0..10)
+        .map(|digit| F1::new(digit, n_train, epsilon))
+        .collect();
 
     for (i, row) in test_data.row_iter().enumerate() {
         let (mut digit, mut max_score) = (0, f64::NEG_INFINITY);
@@ -344,7 +352,17 @@ fn digit_inference(tst_img: &[u8], tst_lbl: &[u8], weights: Vec<Weights>) -> Res
 // - radius of point is F1 score
 
 fn f1_scatterplot(metrics: Vec<F1>) -> Result<()> {
-    let root = BitMapBackend::new("F1_scatterplot.png", (1920, 1080)).into_drawing_area();
+    let path = std::path::Path::new("./scatterplots");
+    std::fs::create_dir_all(path)?;
+
+    let n_train = metrics.first().unwrap().n_train;
+    let epsilon = metrics.first().unwrap().epsilon;
+
+    let scatterplot_folder = format!("scatterplot {}_{}", n_train, epsilon);
+    let scatterplot_folder = path.join(scatterplot_folder);
+
+    let filename = format!("{}.png", scatterplot_folder.display(),);
+    let root = BitMapBackend::new(&filename, (1920, 1080)).into_drawing_area();
     root.fill(&WHITE)?;
     let mut chart = ChartBuilder::on(&root)
         .caption("Digit Classification Performance", ("sans-serif", 30))
