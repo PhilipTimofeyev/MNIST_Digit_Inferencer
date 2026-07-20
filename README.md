@@ -1,4 +1,4 @@
-# Digit Classifier
+# MNIST Digit Inferencer
 
 A handwritten digit classifier written from scratch in Rust.
 
@@ -179,7 +179,6 @@ The scatterplot shows the results for each digit with:
 
 ```math
 F₁=2*\frac{Precision*Recall}{Precision + Recall}
-\\\\\quad\small\text{$F₁$ score formula}
 ```
 
 An example of a scatterplot when trained on just 100 images:
