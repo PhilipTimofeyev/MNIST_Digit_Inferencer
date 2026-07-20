@@ -179,7 +179,7 @@ The scatterplot shows the results for each digit with:
 
 ```math
 F₁=2*\frac{Precision*Recall}{Precision + Recall}
-\\\\\quad\small\text{$F_1$ score formula}
+\\\\\quad\small\text{$F₁$ score formula}
 ```
 
 An example of a scatterplot when trained on just 100 images:
