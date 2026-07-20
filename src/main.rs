@@ -9,7 +9,7 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter};
 
 const EPSILON: f64 = 1.0;
-const N_TRAINING_SET: u32 = 790;
+const N_TRAINING_SET: u32 = 10000;
 const N_TESTING_SET: u32 = 10000;
 
 fn main() -> Result<()> {
