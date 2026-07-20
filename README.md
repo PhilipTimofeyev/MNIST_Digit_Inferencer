@@ -29,11 +29,20 @@ Computes the least squares solution using Moore-Penrose Pseudo-inverse through s
 ```math
 A^TA\hat{x} = A^T\vec{b}\
 \\\quad\small\text{Normal Equation}
-\\\\ \hat{x} = A^+b\
+```
+
+```math
+\hat{x} = A^+b\
 \\\quad\small\text{Moore-Penrose Pseudo-inverse}
-\\\\A=U\Sigma V^T
+```
+
+```math
+A=U\Sigma V^T
 \\\quad\small\text{Singular Value Decomposition}
-\\\\A^+=V\Sigma{^+}U^T
+```
+
+```math
+A^+=V\Sigma{^+}U^T
 \\\quad\small\text{Pseudo-inverse of A}
 ```
 
@@ -148,7 +157,7 @@ Number of Tests: 10000
 
 After inferencing, a scatterplot is exported to the `/scatterplots` folder giving a visualization of the results.
 
-![60000 trained](./assets/images/scatterplot 60000_1.png)
+![60000 trained](./assets/images/scatterplot_60000_1.png)
 
 The scatterplot shows the results for each digit with:
 
@@ -169,13 +178,13 @@ The scatterplot shows the results for each digit with:
 ```
 
 ```math
-F_1=2*\frac{Precision*Recall}{Precision + Recall}
+F₁=2*\frac{Precision*Recall}{Precision + Recall}
 \\\\\quad\small\text{$F_1$ score formula}
 ```
 
 An example of a scatterplot when trained on just 100 images:
 
-![100 trained](./assets/images/scatterplot 100_1.png)
+![100 trained](./assets/images/scatterplot_100_1.png)
 
 It can be noticed that even at just 100 images, the digits 0 and 1 are still classified decently well due to the uniqueness of their design.
 
