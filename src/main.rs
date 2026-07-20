@@ -433,6 +433,8 @@ mod tests {
     fn test_f1() {
         let f1_example = F1 {
             digit: 0,
+            epsilon: 1.0,
+            n_train: 0,
             tpos: 8.0,
             fpos: 7.0,
             fneg: 2.0,
