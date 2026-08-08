@@ -1,16 +1,18 @@
 use anyhow::{Context, Result};
 use dialoguer::FuzzySelect;
+use faer::linalg::solvers::SolveLstsq;
 use faer::{Col, Mat, MatRef};
 use mnist::*;
 use nalgebra::{DMatrix, DVector, SVD};
 use plotters::prelude::*;
+use rand::RngExt;
 use rfd::FileDialog;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 
-const EPSILON: f64 = 1.0;
-const N_TRAINING_SET: u32 = 10000;
+const EPSILON: f64 = 1e-12;
+const N_TRAINING_SET: u32 = 9000;
 const N_TESTING_SET: u32 = 10000;
 
 fn main() -> Result<()> {
@@ -45,6 +47,25 @@ fn svd_least_squares_faer(matrix: Mat<f64>, vector: Col<f64>, digit: u8) -> Weig
     let pseudo_inverse = svd.pseudoinverse();
     let solution = pseudo_inverse * vector;
     let solution: Vec<f64> = solution.iter().copied().collect();
+
+    Weights::new(solution.as_slice(), digit)
+}
+
+fn qr_least_squares_faer(matrix: Mat<f64>, vector: Col<f64>, digit: u8) -> Weights {
+    let mut matrix = matrix.clone();
+
+    let mut rng = rand::rng();
+
+    // create a small amount of noise to prevent dividing by 0
+    for col in 0..matrix.ncols() {
+        for row in 0..matrix.nrows() {
+            let noise = rng.random_range(-EPSILON..EPSILON);
+            matrix[(row, col)] += noise;
+        }
+    }
+    let qr = matrix.col_piv_qr();
+
+    let solution: Vec<f64> = qr.solve_lstsq(vector.clone()).iter().copied().collect();
 
     Weights::new(solution.as_slice(), digit)
 }
@@ -184,7 +205,8 @@ fn select_train_or_infer(
 
 enum Method {
     Lapack,
-    Faer,
+    FaerSVD,
+    FaerQR,
 }
 
 fn train_all_digits(trn_img: &[u8], trn_lbl: &[u8], method: Method) -> Result<()> {
@@ -196,9 +218,13 @@ fn train_all_digits(trn_img: &[u8], trn_lbl: &[u8], method: Method) -> Result<()
                 let (train_data, train_label) = prepare_train_data_nalgebra(trn_img, trn_lbl, i)?;
                 svd_least_squares_lapack(&train_data, &train_label, i, EPSILON)
             }
-            Method::Faer => {
+            Method::FaerSVD => {
                 let (train_data, train_label) = prepare_train_data_faer(trn_img, trn_lbl, i)?;
                 svd_least_squares_faer(train_data, train_label, i)
+            }
+            Method::FaerQR => {
+                let (train_data, train_label) = prepare_train_data_faer(trn_img, trn_lbl, i)?;
+                qr_least_squares_faer(train_data, train_label, i)
             }
         };
         save_json(weights)?;
@@ -215,9 +241,13 @@ fn train_single_digit(trn_img: &[u8], trn_lbl: &[u8], digit: u8, method: Method)
             let (train_data, train_label) = prepare_train_data_nalgebra(trn_img, trn_lbl, digit)?;
             svd_least_squares_lapack(&train_data, &train_label, digit, EPSILON)
         }
-        Method::Faer => {
+        Method::FaerSVD => {
             let (train_data, train_label) = prepare_train_data_faer(trn_img, trn_lbl, digit)?;
             svd_least_squares_faer(train_data, train_label, digit)
+        }
+        Method::FaerQR => {
+            let (train_data, train_label) = prepare_train_data_faer(trn_img, trn_lbl, digit)?;
+            qr_least_squares_faer(train_data, train_label, digit)
         }
     };
     save_json(weights)?;
@@ -239,15 +269,16 @@ fn select_digit_to_train() -> Result<u8> {
 }
 
 fn select_training_method() -> Result<Method> {
-    let items = vec!["Faer SVD", "Lapack SVD"];
+    let items = vec!["Faer SVD", "Lapack SVD", "Faer QR"];
     let selection = FuzzySelect::new()
         .with_prompt("Select and option:")
         .items(&items)
         .interact()?;
 
     match selection {
-        0 => Ok(Method::Faer),
+        0 => Ok(Method::FaerSVD),
         1 => Ok(Method::Lapack),
+        2 => Ok(Method::FaerQR),
         _ => todo!(),
     }
 }
@@ -258,8 +289,8 @@ fn prepare_train_data_nalgebra(
     digit_to_train: u8,
 ) -> Result<(DMatrix<f64>, DVector<f64>)> {
     let train_data = DMatrix::from_row_slice(N_TRAINING_SET as usize, 784, trn_img)
-        .map(|pixel| if pixel as f64 > 0.0 { 1.0 } else { 0.0 });
-    // .map(|pixel| pixel as f64 / 255.0);
+        // .map(|pixel| if pixel as f64 > 0.0 { 1.0 } else { 0.0 });
+        .map(|pixel| pixel as f64 / 255.0);
 
     // Add bias term in the form of a column of 1's
     let train_data = train_data.insert_column(0, 1.0);
@@ -276,8 +307,8 @@ fn prepare_train_data_faer(
     digit_to_train: u8,
 ) -> Result<(Mat<f64>, Col<f64>)> {
     let train_data = MatRef::from_row_major_slice(trn_img, N_TRAINING_SET as usize, 784)
-        .map(|pixel| if *pixel > 0 { 1.0 } else { 0.0 });
-    // .map(|pixel| pixel as f64 / 255.0);
+        // .map(|pixel| if *pixel > 0 { 1.0 } else { 0.0 });
+        .map(|pixel| *pixel as f64 / 255.0);
 
     // Add bias term in the form of a column of 1's
     let bias_col = Mat::from_fn(train_data.nrows(), 1, |_, _| 1.0);
@@ -509,6 +540,19 @@ mod tests {
         let digit = 0;
 
         let weights = svd_least_squares_faer(matrix, vector, digit).weights;
+        assert_relative_eq!(weights[..], &vec![2.5, -1.0], epsilon = 0.001);
+    }
+
+    #[test]
+    fn test_qr_least_squares_faer() {
+        let x = [1.0, 1.0, 2.0, 1.0, 3.0, 1.0];
+        let matrix = MatRef::from_row_major_slice(&x, 3, 2).to_owned();
+        // let matrix = Mat::from_fn(3, 2, |i, j| x[i * 3 + j]);
+        let y = [2.0, 3.0, 7.0];
+        let vector = Col::from_fn(3, |i| y[i]);
+        let digit = 0;
+
+        let weights = qr_least_squares_faer(matrix, vector, digit).weights;
         assert_relative_eq!(weights[..], &vec![2.5, -1.0], epsilon = 0.001);
     }
 

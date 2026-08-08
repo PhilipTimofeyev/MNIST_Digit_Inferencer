@@ -163,7 +163,7 @@ The scatterplot shows the results for each digit with:
 
 - x-axis representing Precision
 - y-axis representing Recall
-- the radius of the dot representing F1 score (bigger is better)
+- the radius of the dot representing F₁ score (bigger is better)
 
 
 
