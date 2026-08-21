@@ -1,8 +1,7 @@
 use anyhow::{Context, Result};
 use dialoguer::FuzzySelect;
-use faer::linalg::solvers::{ShapeCore, SolveLstsq};
 use faer::linalg::triangular_solve::solve_upper_triangular_in_place;
-use faer::{Col, Mat, MatRef};
+use faer::{Col, Mat, MatRef, Par};
 use mnist::*;
 use nalgebra::{DMatrix, DVector, SVD};
 use plotters::prelude::*;
@@ -11,8 +10,8 @@ use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 
-const EPSILON: f64 = 1e-12;
-const N_TRAINING_SET: u32 = 3000;
+const EPSILON: f64 = 4.0;
+const N_TRAINING_SET: u32 = 1000;
 const N_TESTING_SET: u32 = 10000;
 
 fn main() -> Result<()> {
@@ -52,11 +51,15 @@ fn svd_least_squares_faer(matrix: Mat<f64>, vector: Col<f64>, digit: u8) -> Weig
 }
 
 fn qr_least_squares_faer(matrix: Mat<f64>, vector: Col<f64>, digit: u8) -> Weights {
-    let rank = 600;
-
     let qr = matrix.col_piv_qr();
     let q = qr.compute_thin_Q();
     let rt = qr.R().to_owned().clone();
+
+    let rank = (0..rt.nrows().min(rt.ncols()))
+        .take_while(|&i| rt[(i, i)].abs() > EPSILON)
+        .count();
+
+    println!("Rank: {rank}");
 
     // Q^T * b
     let qtb = q.transpose() * vector;
@@ -67,7 +70,8 @@ fn qr_least_squares_faer(matrix: Mat<f64>, vector: Col<f64>, digit: u8) -> Weigh
     // R (upper right triangle matrix)
     let rt = rt.submatrix(0, 0, rank, rank);
 
-    solve_upper_triangular_in_place(rt, qtb_truncated.as_mat_mut(), faer::Par::Seq);
+    // solve_upper_triangular_in_place(rt, qtb_truncated.as_mat_mut(), Par::rayon(0));
+    solve_upper_triangular_in_place(rt, qtb_truncated.as_mat_mut(), Par::Seq);
 
     let mut permutated_y = qtb_truncated;
     permutated_y.resize_with(785, |_| 0.0);
