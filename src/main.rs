@@ -1,18 +1,18 @@
 use anyhow::{Context, Result};
 use dialoguer::FuzzySelect;
-use faer::linalg::solvers::SolveLstsq;
+use faer::linalg::solvers::{ShapeCore, SolveLstsq};
+use faer::linalg::triangular_solve::solve_upper_triangular_in_place;
 use faer::{Col, Mat, MatRef};
 use mnist::*;
 use nalgebra::{DMatrix, DVector, SVD};
 use plotters::prelude::*;
-use rand::RngExt;
 use rfd::FileDialog;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 
 const EPSILON: f64 = 1e-12;
-const N_TRAINING_SET: u32 = 9000;
+const N_TRAINING_SET: u32 = 3000;
 const N_TESTING_SET: u32 = 10000;
 
 fn main() -> Result<()> {
@@ -52,23 +52,53 @@ fn svd_least_squares_faer(matrix: Mat<f64>, vector: Col<f64>, digit: u8) -> Weig
 }
 
 fn qr_least_squares_faer(matrix: Mat<f64>, vector: Col<f64>, digit: u8) -> Weights {
-    let mut matrix = matrix.clone();
+    let rank = 600;
 
-    let mut rng = rand::rng();
-
-    // create a small amount of noise to prevent dividing by 0
-    for col in 0..matrix.ncols() {
-        for row in 0..matrix.nrows() {
-            let noise = rng.random_range(-EPSILON..EPSILON);
-            matrix[(row, col)] += noise;
-        }
-    }
     let qr = matrix.col_piv_qr();
+    let q = qr.compute_thin_Q();
+    let rt = qr.R().to_owned().clone();
 
-    let solution: Vec<f64> = qr.solve_lstsq(vector.clone()).iter().copied().collect();
+    // Q^T * b
+    let qtb = q.transpose() * vector;
 
-    Weights::new(solution.as_slice(), digit)
+    let (qtb_truncated, _discard) = qtb.split_at_row(rank);
+    let mut qtb_truncated = qtb_truncated.to_owned();
+
+    // R (upper right triangle matrix)
+    let rt = rt.submatrix(0, 0, rank, rank);
+
+    solve_upper_triangular_in_place(rt, qtb_truncated.as_mat_mut(), faer::Par::Seq);
+
+    let mut permutated_y = qtb_truncated;
+    permutated_y.resize_with(785, |_| 0.0);
+
+    let p = qr.P();
+
+    let (forward_idx, _inverse_idx) = p.arrays();
+
+    let mut x = Mat::<f64>::zeros(permutated_y.nrows(), 1);
+
+    for (i, &orig_col) in forward_idx.iter().enumerate() {
+        x[(orig_col, 0)] = permutated_y[i];
+    }
+
+    Weights::new(x.col_as_slice(0), digit)
 }
+
+// fn matrix_rank(matrix: Mat<f64>) {
+//     let nrows = matrix.nrows();
+//     let ncols = matrix.ncols();
+//     let r = matrix.R();
+//     let min_dim = std::cmp::min(nrows, ncols);
+//
+//     // Set a numerical tolerance based on size and machine epsilon
+//     let eps = f64::EPSILON;
+//     let max_diag = (0..min_dim).map(|i| r.read(i, i).abs()).fold(0.0, f64::max);
+//     let tol = eps * std::cmp::max(nrows, ncols) as f64 * max_diag;
+//
+//     // Count diagonal elements greater than tolerance
+//     let rank = (0..min_dim).filter(|&i| r.read(i, i).abs() > tol).count();
+// }
 
 fn svd_least_squares_lapack(
     x: &DMatrix<f64>,
