@@ -3,15 +3,16 @@ use dialoguer::FuzzySelect;
 use faer::linalg::triangular_solve::solve_upper_triangular_in_place;
 use faer::{Col, Mat, MatRef, Par};
 use mnist::*;
-use nalgebra::{DMatrix, DVector, SVD};
+use nalgebra::{ColPivQR, DMatrix, DVector, SVD};
 use plotters::prelude::*;
 use rfd::FileDialog;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
+use std::time::Instant;
 
-const EPSILON: f64 = 4.0;
-const N_TRAINING_SET: u32 = 1000;
+const EPSILON: f64 = 1e-1;
+const N_TRAINING_SET: u32 = 2000;
 const N_TESTING_SET: u32 = 10000;
 
 fn main() -> Result<()> {
@@ -33,6 +34,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+// Not in use
 #[allow(dead_code)]
 fn svd_least_squares(x: &DMatrix<f64>, y: &DVector<f64>, digit: u8, epsilon: f64) -> Weights {
     let svd = SVD::new(x.clone(), true, true);
@@ -42,18 +44,25 @@ fn svd_least_squares(x: &DMatrix<f64>, y: &DVector<f64>, digit: u8, epsilon: f64
 }
 
 fn svd_least_squares_faer(matrix: Mat<f64>, vector: Col<f64>, digit: u8) -> Weights {
+    let start = Instant::now();
     let svd = matrix.thin_svd().unwrap();
     let pseudo_inverse = svd.pseudoinverse();
     let solution = pseudo_inverse * vector;
+    let duration = start.elapsed();
+    println!("Time elapsed: {:?}", duration);
     let solution: Vec<f64> = solution.iter().copied().collect();
 
     Weights::new(solution.as_slice(), digit)
 }
 
 fn qr_least_squares_faer(matrix: Mat<f64>, vector: Col<f64>, digit: u8) -> Weights {
+    let start = Instant::now();
+    let qr = matrix.qr();
+    let duration = start.elapsed();
+    println!("Time elapsed: {:?}", duration);
     let qr = matrix.col_piv_qr();
     let q = qr.compute_thin_Q();
-    let rt = qr.R().to_owned().clone();
+    let rt = qr.R().to_owned();
 
     let rank = (0..rt.nrows().min(rt.ncols()))
         .take_while(|&i| rt[(i, i)].abs() > EPSILON)
@@ -70,8 +79,8 @@ fn qr_least_squares_faer(matrix: Mat<f64>, vector: Col<f64>, digit: u8) -> Weigh
     // R (upper right triangle matrix)
     let rt = rt.submatrix(0, 0, rank, rank);
 
-    // solve_upper_triangular_in_place(rt, qtb_truncated.as_mat_mut(), Par::rayon(0));
-    solve_upper_triangular_in_place(rt, qtb_truncated.as_mat_mut(), Par::Seq);
+    solve_upper_triangular_in_place(rt, qtb_truncated.as_mat_mut(), Par::rayon(0));
+    // solve_upper_triangular_in_place(rt, qtb_truncated.as_mat_mut(), Par::Seq);
 
     let mut permutated_y = qtb_truncated;
     permutated_y.resize_with(785, |_| 0.0);
@@ -89,27 +98,14 @@ fn qr_least_squares_faer(matrix: Mat<f64>, vector: Col<f64>, digit: u8) -> Weigh
     Weights::new(x.col_as_slice(0), digit)
 }
 
-// fn matrix_rank(matrix: Mat<f64>) {
-//     let nrows = matrix.nrows();
-//     let ncols = matrix.ncols();
-//     let r = matrix.R();
-//     let min_dim = std::cmp::min(nrows, ncols);
-//
-//     // Set a numerical tolerance based on size and machine epsilon
-//     let eps = f64::EPSILON;
-//     let max_diag = (0..min_dim).map(|i| r.read(i, i).abs()).fold(0.0, f64::max);
-//     let tol = eps * std::cmp::max(nrows, ncols) as f64 * max_diag;
-//
-//     // Count diagonal elements greater than tolerance
-//     let rank = (0..min_dim).filter(|&i| r.read(i, i).abs() > tol).count();
-// }
-
 fn svd_least_squares_lapack(
     x: &DMatrix<f64>,
     y: &DVector<f64>,
     digit: u8,
     epsilon: f64,
 ) -> Weights {
+    let start = Instant::now();
+
     let svd = nalgebra_lapack::SVD::new(x.clone()).unwrap();
 
     // Equation to solve is w = V * sigma^-1 * U^T * y
@@ -134,6 +130,36 @@ fn svd_least_squares_lapack(
 
     // Finally multiply by V to get the least squares solution
     let solution = svd.vt.transpose() * trimmed_ut_y;
+    let duration = start.elapsed();
+    println!("Time elapsed: {:?}", duration);
+
+    Weights::new(solution.as_slice(), digit)
+}
+
+fn qr_least_squares_nalgebra(x: &DMatrix<f64>, y: &DVector<f64>, digit: u8) -> Weights {
+    let qr = x.clone().col_piv_qr();
+
+    let q = qr.q();
+    let rt = qr.r();
+
+    let qtb = q.transpose() * y;
+
+    let rank = (0..rt.nrows().min(rt.ncols()))
+        .take_while(|&i| rt[(i, i)].abs() > EPSILON)
+        .count();
+
+    let qtb_trimmed = qtb.rows(0, rank).into_owned();
+    let rt_trimmed = rt.view((0, 0), (rank, rank));
+
+    let p = qr.p();
+
+    let solution_trimmed = rt_trimmed.solve_upper_triangular(&qtb_trimmed).unwrap();
+
+    let mut solution = solution_trimmed.resize_vertically(785, 0.0);
+
+    p.inv_permute_rows(&mut solution);
+
+    println!("{rank}");
 
     Weights::new(solution.as_slice(), digit)
 }
@@ -225,7 +251,6 @@ fn select_train_or_infer(
                 let method = select_training_method()?;
                 train_all_digits(trn_img, trn_lbl, method)?;
             }
-
             2 => {
                 let weights = get_weights()?;
                 digit_inference(tst_img, tst_lbl, weights)?
@@ -239,6 +264,7 @@ fn select_train_or_infer(
 
 enum Method {
     Lapack,
+    LapackQR,
     FaerSVD,
     FaerQR,
 }
@@ -251,6 +277,10 @@ fn train_all_digits(trn_img: &[u8], trn_lbl: &[u8], method: Method) -> Result<()
             Method::Lapack => {
                 let (train_data, train_label) = prepare_train_data_nalgebra(trn_img, trn_lbl, i)?;
                 svd_least_squares_lapack(&train_data, &train_label, i, EPSILON)
+            }
+            Method::LapackQR => {
+                let (train_data, train_label) = prepare_train_data_nalgebra(trn_img, trn_lbl, i)?;
+                qr_least_squares_nalgebra(&train_data, &train_label, i)
             }
             Method::FaerSVD => {
                 let (train_data, train_label) = prepare_train_data_faer(trn_img, trn_lbl, i)?;
@@ -274,6 +304,10 @@ fn train_single_digit(trn_img: &[u8], trn_lbl: &[u8], digit: u8, method: Method)
         Method::Lapack => {
             let (train_data, train_label) = prepare_train_data_nalgebra(trn_img, trn_lbl, digit)?;
             svd_least_squares_lapack(&train_data, &train_label, digit, EPSILON)
+        }
+        Method::LapackQR => {
+            let (train_data, train_label) = prepare_train_data_nalgebra(trn_img, trn_lbl, digit)?;
+            qr_least_squares_nalgebra(&train_data, &train_label, digit)
         }
         Method::FaerSVD => {
             let (train_data, train_label) = prepare_train_data_faer(trn_img, trn_lbl, digit)?;
@@ -303,7 +337,7 @@ fn select_digit_to_train() -> Result<u8> {
 }
 
 fn select_training_method() -> Result<Method> {
-    let items = vec!["Faer SVD", "Lapack SVD", "Faer QR"];
+    let items = vec!["Faer SVD", "Lapack SVD", "Lapack QR", "Faer QR"];
     let selection = FuzzySelect::new()
         .with_prompt("Select and option:")
         .items(&items)
@@ -312,7 +346,8 @@ fn select_training_method() -> Result<Method> {
     match selection {
         0 => Ok(Method::FaerSVD),
         1 => Ok(Method::Lapack),
-        2 => Ok(Method::FaerQR),
+        2 => Ok(Method::LapackQR),
+        3 => Ok(Method::FaerQR),
         _ => todo!(),
     }
 }
