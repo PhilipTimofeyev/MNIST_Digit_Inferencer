@@ -12,7 +12,7 @@ use std::io::{BufReader, BufWriter};
 use std::time::Instant;
 
 const EPSILON: f64 = 1e-12;
-const N_TRAINING_SET: u32 = 4000;
+const N_TRAINING_SET: u32 = 7500;
 const N_TESTING_SET: u32 = 10000;
 
 fn main() -> Result<()> {
@@ -433,8 +433,8 @@ fn get_weights() -> Result<Vec<Weights>> {
 
 fn digit_inference(tst_img: &[u8], tst_lbl: &[u8], weights: Vec<Weights>) -> Result<()> {
     let test_data = DMatrix::from_row_slice(N_TESTING_SET as usize, 784, tst_img)
-        .map(|pixel| if pixel as f64 > 0.0 { 1.0 } else { 0.0 });
-    // .map(|pixel| pixel as f64 / 255.0);
+        // .map(|pixel| if pixel as f64 > 0.0 { 1.0 } else { 0.0 });
+        .map(|pixel| pixel as f64 / 255.0);
 
     let test_data = test_data.insert_column(0, 1.0);
 
@@ -584,7 +584,7 @@ mod tests {
         let y = DVector::<f64>::from_vec(vec![2.0, 3.0, 7.0]);
         let digit = 0;
         let epsilon = 1e-12;
-        let result = svd_least_squares_lapack(&x, &y, digit);
+        let result = svd_least_squares_lapack(x, &y, digit);
 
         assert_relative_eq!(result.weights[..], &vec![2.5, -1.0], epsilon = epsilon);
     }
