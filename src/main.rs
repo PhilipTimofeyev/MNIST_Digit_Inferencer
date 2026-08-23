@@ -3,7 +3,7 @@ use dialoguer::FuzzySelect;
 use faer::linalg::triangular_solve::solve_upper_triangular_in_place;
 use faer::{Col, Mat, MatRef, Par};
 use mnist::*;
-use nalgebra::{ColPivQR, DMatrix, DVector, SVD};
+use nalgebra::{DMatrix, DVector, SVD};
 use plotters::prelude::*;
 use rfd::FileDialog;
 use serde::{Deserialize, Serialize};
@@ -11,8 +11,8 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use std::time::Instant;
 
-const EPSILON: f64 = 1e-1;
-const N_TRAINING_SET: u32 = 900;
+const EPSILON: f64 = 1e-12;
+const N_TRAINING_SET: u32 = 10100;
 const N_TESTING_SET: u32 = 10000;
 
 fn main() -> Result<()> {
@@ -43,6 +43,7 @@ fn svd_least_squares(x: &DMatrix<f64>, y: &DVector<f64>, digit: u8, epsilon: f64
     Weights::new(weights.as_slice(), digit)
 }
 
+// Tolerance (Epsilon) is set internally by Faer
 fn svd_least_squares_faer(matrix: Mat<f64>, vector: Col<f64>, digit: u8) -> Weights {
     let svd = matrix.thin_svd().unwrap();
     let pseudo_inverse = svd.pseudoinverse();
@@ -53,7 +54,6 @@ fn svd_least_squares_faer(matrix: Mat<f64>, vector: Col<f64>, digit: u8) -> Weig
 }
 
 fn qr_least_squares_faer(matrix: Mat<f64>, vector: Col<f64>, digit: u8) -> Weights {
-    let qr = matrix.qr();
     let qr = matrix.col_piv_qr();
     let q = qr.compute_thin_Q();
     let rt = qr.R().to_owned();
@@ -77,7 +77,7 @@ fn qr_least_squares_faer(matrix: Mat<f64>, vector: Col<f64>, digit: u8) -> Weigh
     // solve_upper_triangular_in_place(rt, qtb_truncated.as_mat_mut(), Par::Seq);
 
     let mut permutated_y = qtb_truncated;
-    permutated_y.resize_with(785, |_| 0.0);
+    permutated_y.resize_with(matrix.ncols(), |_| 0.0);
 
     let p = qr.P();
 
@@ -92,37 +92,35 @@ fn qr_least_squares_faer(matrix: Mat<f64>, vector: Col<f64>, digit: u8) -> Weigh
     Weights::new(x.col_as_slice(0), digit)
 }
 
-fn svd_least_squares_lapack(
-    x: &DMatrix<f64>,
-    y: &DVector<f64>,
-    digit: u8,
-    epsilon: f64,
-) -> Weights {
+fn svd_least_squares_lapack(x: &DMatrix<f64>, y: &DVector<f64>, digit: u8) -> Weights {
     let svd = nalgebra_lapack::SVD::new(x.clone()).unwrap();
-    let rank = svd.rank(EPSILON);
+
+    let epsilon = 1e-8;
+
+    let max_singular_value = svd.singular_values[0];
+
+    let rank = svd
+        .singular_values
+        .iter()
+        .filter(|&&s| s > epsilon * max_singular_value)
+        .count();
+
+    println!("Rank: {}", rank);
 
     // Equation to solve is w = V * sigma^-1 * U^T * y
 
     let ut_y = svd.u.transpose() * y;
 
-    // Since the sigma matrix is comprised of singular values of A^T*A, it will have a multiplicity
-    // of the number of rows (784 in the case of the MNIST data set). Beyond those rows the values
-    // will be zero, so to save time on computation, the ut_y matrix can be trimmed down to 785 x 1,
-    // since those values would be multiplied by zero anyway.
-    let mut trimmed_ut_y = ut_y.rows(0, svd.singular_values.len()).into_owned();
+    let mut trimmed_ut_y = ut_y.rows(0, rank).into_owned();
 
-    // This filters out values that would cause a division by zero, and divides (U^T*y) by the
-    // singular values
-    for (trimmed_i, singular_i) in trimmed_ut_y.iter_mut().zip(svd.singular_values.iter()) {
-        if *singular_i > epsilon {
-            *trimmed_i /= *singular_i;
-        } else {
-            *trimmed_i = 0.0;
-        }
+    for i in 0..rank {
+        trimmed_ut_y[i] /= svd.singular_values[i];
     }
 
+    let vt = svd.vt.rows(0, rank);
+
     // Finally multiply by V to get the least squares solution
-    let solution = svd.vt.transpose() * trimmed_ut_y;
+    let solution = vt.transpose() * trimmed_ut_y;
 
     Weights::new(solution.as_slice(), digit)
 }
@@ -263,7 +261,7 @@ fn train_all_digits(trn_img: &[u8], trn_lbl: &[u8], method: Method) -> Result<()
         let weights = match method {
             Method::Lapack => {
                 let (train_data, train_label) = prepare_train_data_nalgebra(trn_img, trn_lbl, i)?;
-                svd_least_squares_lapack(&train_data, &train_label, i, EPSILON)
+                svd_least_squares_lapack(&train_data, &train_label, i)
             }
             Method::NAlgebraQR => {
                 let (train_data, train_label) = prepare_train_data_nalgebra(trn_img, trn_lbl, i)?;
@@ -294,7 +292,7 @@ fn train_single_digit(trn_img: &[u8], trn_lbl: &[u8], digit: u8, method: Method)
     let weights = match method {
         Method::Lapack => {
             let (train_data, train_label) = prepare_train_data_nalgebra(trn_img, trn_lbl, digit)?;
-            svd_least_squares_lapack(&train_data, &train_label, digit, EPSILON)
+            svd_least_squares_lapack(&train_data, &train_label, digit)
         }
         Method::NAlgebraQR => {
             let (train_data, train_label) = prepare_train_data_nalgebra(trn_img, trn_lbl, digit)?;
@@ -586,7 +584,7 @@ mod tests {
         let y = DVector::<f64>::from_vec(vec![2.0, 3.0, 7.0]);
         let digit = 0;
         let epsilon = 1e-12;
-        let result = svd_least_squares_lapack(&x, &y, digit, epsilon);
+        let result = svd_least_squares_lapack(&x, &y, digit);
 
         assert_relative_eq!(result.weights[..], &vec![2.5, -1.0], epsilon = epsilon);
     }
