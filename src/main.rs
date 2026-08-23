@@ -12,7 +12,7 @@ use std::io::{BufReader, BufWriter};
 use std::time::Instant;
 
 const EPSILON: f64 = 1e-12;
-const N_TRAINING_SET: u32 = 10100;
+const N_TRAINING_SET: u32 = 4000;
 const N_TESTING_SET: u32 = 10000;
 
 fn main() -> Result<()> {
@@ -92,8 +92,8 @@ fn qr_least_squares_faer(matrix: Mat<f64>, vector: Col<f64>, digit: u8) -> Weigh
     Weights::new(x.col_as_slice(0), digit)
 }
 
-fn svd_least_squares_lapack(x: &DMatrix<f64>, y: &DVector<f64>, digit: u8) -> Weights {
-    let svd = nalgebra_lapack::SVD::new(x.clone()).unwrap();
+fn svd_least_squares_lapack(x: DMatrix<f64>, y: &DVector<f64>, digit: u8) -> Weights {
+    let svd = nalgebra_lapack::SVD::new(x).unwrap();
 
     let epsilon = 1e-8;
 
@@ -125,8 +125,8 @@ fn svd_least_squares_lapack(x: &DMatrix<f64>, y: &DVector<f64>, digit: u8) -> We
     Weights::new(solution.as_slice(), digit)
 }
 
-fn qr_least_squares_nalgebra(x: &DMatrix<f64>, y: &DVector<f64>, digit: u8) -> Weights {
-    let qr = x.clone().col_piv_qr();
+fn qr_least_squares_nalgebra(x: DMatrix<f64>, y: &DVector<f64>, digit: u8) -> Weights {
+    let qr = x.col_piv_qr();
 
     let (q, rt, p) = qr.unpack();
     let qtb = q.transpose() * y;
@@ -261,11 +261,11 @@ fn train_all_digits(trn_img: &[u8], trn_lbl: &[u8], method: Method) -> Result<()
         let weights = match method {
             Method::Lapack => {
                 let (train_data, train_label) = prepare_train_data_nalgebra(trn_img, trn_lbl, i)?;
-                svd_least_squares_lapack(&train_data, &train_label, i)
+                svd_least_squares_lapack(train_data, &train_label, i)
             }
             Method::NAlgebraQR => {
                 let (train_data, train_label) = prepare_train_data_nalgebra(trn_img, trn_lbl, i)?;
-                qr_least_squares_nalgebra(&train_data, &train_label, i)
+                qr_least_squares_nalgebra(train_data, &train_label, i)
             }
             Method::FaerSVD => {
                 let (train_data, train_label) = prepare_train_data_faer(trn_img, trn_lbl, i)?;
@@ -292,11 +292,11 @@ fn train_single_digit(trn_img: &[u8], trn_lbl: &[u8], digit: u8, method: Method)
     let weights = match method {
         Method::Lapack => {
             let (train_data, train_label) = prepare_train_data_nalgebra(trn_img, trn_lbl, digit)?;
-            svd_least_squares_lapack(&train_data, &train_label, digit)
+            svd_least_squares_lapack(train_data, &train_label, digit)
         }
         Method::NAlgebraQR => {
             let (train_data, train_label) = prepare_train_data_nalgebra(trn_img, trn_lbl, digit)?;
-            qr_least_squares_nalgebra(&train_data, &train_label, digit)
+            qr_least_squares_nalgebra(train_data, &train_label, digit)
         }
         Method::FaerSVD => {
             let (train_data, train_label) = prepare_train_data_faer(trn_img, trn_lbl, digit)?;
