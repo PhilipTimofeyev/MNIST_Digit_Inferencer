@@ -3,7 +3,7 @@ use dialoguer::FuzzySelect;
 use faer::linalg::triangular_solve::solve_upper_triangular_in_place;
 use faer::{Col, Mat, MatRef, Par};
 use mnist::*;
-use nalgebra::{DMatrix, DVector, SVD};
+use nalgebra::{DMatrix, DVector, SVD, SymmetricEigen};
 use plotters::prelude::*;
 use rfd::FileDialog;
 use serde::{Deserialize, Serialize};
@@ -11,9 +11,10 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use std::time::Instant;
 
-const EPSILON: f64 = 1e-12;
-const N_TRAINING_SET: u32 = 7500;
+const EPSILON: f64 = 1e-2;
+const N_TRAINING_SET: u32 = 20000;
 const N_TESTING_SET: u32 = 10000;
+const PCA_COMPONENTS: usize = 20;
 
 fn main() -> Result<()> {
     let Mnist {
@@ -34,6 +35,97 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct Pca {
+    mean: DVector<f64>,
+    components: DMatrix<f64>,
+}
+
+fn save_pca(pca: Pca) -> Result<()> {
+    let path = std::path::Path::new("./pca");
+    std::fs::create_dir_all(path)?;
+
+    let filename = "pca/pca.json";
+    let file = File::create(filename).context("Failed to create file at path")?;
+    let mut writer = BufWriter::new(file);
+
+    serde_json::to_writer_pretty(&mut writer, &pca)
+        .context("Failed to serialize PCA into JSON format")?;
+
+    Ok(())
+}
+
+impl Pca {
+    fn k_components(&mut self, k: usize) -> Pca {
+        self.components = self.components.columns(0, k).into_owned();
+        self.to_owned()
+    }
+}
+
+fn fit_pca(trn_img: &[u8]) -> Pca {
+    let matrix = DMatrix::from_row_slice(60000, 784, trn_img).map(|pixel| pixel as f64 / 255.0);
+    let m = matrix.nrows();
+    let n = matrix.ncols();
+
+    // Calculate column means
+    let mut means = vec![0.0; n];
+
+    for j in 0..n {
+        let mut sum = 0.0;
+
+        for i in 0..m {
+            sum += matrix[(i, j)];
+        }
+
+        means[j] = sum / m as f64;
+    }
+
+    let centered = DMatrix::from_fn(m, n, |i, j| matrix[(i, j)] - means[j]);
+
+    // make sure not to divide by 0
+    let denominater = if m > 1 { (m - 1) as f64 } else { 1.0 };
+    let covariance_matrix = (&centered.transpose() * &centered) / denominater;
+
+    let eigen = SymmetricEigen::new(covariance_matrix);
+
+    let mut eigenpairs: Vec<(f64, DVector<f64>)> = (0..n)
+        .map(|i| {
+            (
+                eigen.eigenvalues[i],
+                eigen.eigenvectors.column(i).into_owned(),
+            )
+        })
+        .collect();
+
+    // Sort by eigenvalue, largest first
+    eigenpairs.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+
+    let k = 784;
+
+    let components = DMatrix::from_columns(
+        &eigenpairs[..k]
+            .iter()
+            .map(|(_, v)| v.clone())
+            .collect::<Vec<_>>(),
+    );
+
+    Pca {
+        mean: DVector::from_vec(means),
+        components,
+    }
+}
+
+fn pca_transform(pca: &mut Pca, matrix: &DMatrix<f64>, k_components: usize) -> DMatrix<f64> {
+    let matrix = matrix.clone_owned();
+    let centered = DMatrix::from_fn(matrix.nrows(), matrix.ncols(), |i, j| {
+        matrix[(i, j)] - pca.mean[j]
+    });
+
+    let pca = pca.k_components(k_components);
+
+    centered * &pca.components
+}
+
 // Not in use
 #[allow(dead_code)]
 fn svd_least_squares(x: &DMatrix<f64>, y: &DVector<f64>, digit: u8, epsilon: f64) -> Weights {
@@ -46,6 +138,7 @@ fn svd_least_squares(x: &DMatrix<f64>, y: &DVector<f64>, digit: u8, epsilon: f64
 // Tolerance (Epsilon) is set internally by Faer
 fn svd_least_squares_faer(matrix: Mat<f64>, vector: Col<f64>, digit: u8) -> Weights {
     let svd = matrix.thin_svd().unwrap();
+
     let pseudo_inverse = svd.pseudoinverse();
     let solution = pseudo_inverse * vector;
     let solution: Vec<f64> = solution.iter().copied().collect();
@@ -95,7 +188,7 @@ fn qr_least_squares_faer(matrix: Mat<f64>, vector: Col<f64>, digit: u8) -> Weigh
 fn svd_least_squares_lapack(x: DMatrix<f64>, y: &DVector<f64>, digit: u8) -> Weights {
     let svd = nalgebra_lapack::SVD::new(x).unwrap();
 
-    let epsilon = 1e-8;
+    let epsilon = 1e-4;
 
     let max_singular_value = svd.singular_values[0];
 
@@ -108,7 +201,6 @@ fn svd_least_squares_lapack(x: DMatrix<f64>, y: &DVector<f64>, digit: u8) -> Wei
     println!("Rank: {}", rank);
 
     // Equation to solve is w = V * sigma^-1 * U^T * y
-
     let ut_y = svd.u.transpose() * y;
 
     let mut trimmed_ut_y = ut_y.rows(0, rank).into_owned();
@@ -218,6 +310,7 @@ fn select_train_or_infer(
             "Train Single Digit",
             "Train All Digits",
             "Inference",
+            "Build PCA",
             "Exit",
         ];
         let selection = FuzzySelect::new()
@@ -238,6 +331,10 @@ fn select_train_or_infer(
             2 => {
                 let weights = get_weights()?;
                 digit_inference(tst_img, tst_lbl, weights)?
+            }
+            3 => {
+                let pca = fit_pca(trn_img);
+                save_pca(pca)?;
             }
             _ => break,
         }
@@ -261,7 +358,10 @@ fn train_all_digits(trn_img: &[u8], trn_lbl: &[u8], method: Method) -> Result<()
         let weights = match method {
             Method::Lapack => {
                 let (train_data, train_label) = prepare_train_data_nalgebra(trn_img, trn_lbl, i)?;
-                svd_least_squares_lapack(train_data, &train_label, i)
+                let mut pca = open_pca()?;
+                let z = pca_transform(&mut pca, &train_data, PCA_COMPONENTS);
+                let z = z.insert_column(0, 1.0);
+                svd_least_squares_lapack(z, &train_label, i)
             }
             Method::NAlgebraQR => {
                 let (train_data, train_label) = prepare_train_data_nalgebra(trn_img, trn_lbl, i)?;
@@ -269,6 +369,7 @@ fn train_all_digits(trn_img: &[u8], trn_lbl: &[u8], method: Method) -> Result<()
             }
             Method::FaerSVD => {
                 let (train_data, train_label) = prepare_train_data_faer(trn_img, trn_lbl, i)?;
+                // let z = pca(train_data.clone());
                 svd_least_squares_faer(train_data, train_label, i)
             }
             Method::FaerQR => {
@@ -351,8 +452,8 @@ fn prepare_train_data_nalgebra(
         // .map(|pixel| if pixel as f64 > 0.0 { 1.0 } else { 0.0 });
         .map(|pixel| pixel as f64 / 255.0);
 
-    // Add bias term in the form of a column of 1's
-    let train_data = train_data.insert_column(0, 1.0);
+    // // Add bias term in the form of a column of 1's
+    // let train_data = train_data.insert_column(0, 1.0);
 
     let train_label = DVector::from_row_slice(trn_lbl)
         .map(|digit| if digit == digit_to_train { 1.0 } else { 0.0 });
@@ -410,6 +511,15 @@ fn open_json(digit: u8, path: &std::path::Path) -> Result<Weights> {
     Ok(weights)
 }
 
+fn open_pca() -> Result<Pca> {
+    let filename = "pca/pca.json";
+    let file = File::open(filename)?;
+    let weights_json = BufReader::new(file);
+    let weights =
+        serde_json::from_reader(weights_json).context("Failed to deserialize weights JSON")?;
+    Ok(weights)
+}
+
 fn get_weights() -> Result<Vec<Weights>> {
     let mut weights: Vec<Weights> = vec![];
     let folder = FileDialog::new()
@@ -436,16 +546,23 @@ fn digit_inference(tst_img: &[u8], tst_lbl: &[u8], weights: Vec<Weights>) -> Res
         // .map(|pixel| if pixel as f64 > 0.0 { 1.0 } else { 0.0 });
         .map(|pixel| pixel as f64 / 255.0);
 
-    let test_data = test_data.insert_column(0, 1.0);
+    // let z = pca_transform(test_data);
 
     let n_train = weights.first().unwrap().n_train.unwrap();
     let epsilon = weights.first().unwrap().epsilon.unwrap();
+    let mut pca = open_pca()?;
+
+    let z = pca_transform(&mut pca, &test_data, PCA_COMPONENTS);
+    let z = z.insert_column(0, 1.0);
+
+    println!("PCA output: {} × {}", z.nrows(), z.ncols());
+
     let mut results: Vec<(u8, u8)> = vec![];
     let mut metrics: Vec<F1> = (0..10)
         .map(|digit| F1::new(digit, n_train, epsilon))
         .collect();
 
-    for (i, row) in test_data.row_iter().enumerate() {
+    for (i, row) in z.row_iter().enumerate() {
         let (mut digit, mut max_score) = (0, f64::NEG_INFINITY);
         for digit_weights in &weights {
             let weights = DVector::from_row_slice(&digit_weights.weights);

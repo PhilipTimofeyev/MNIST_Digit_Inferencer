@@ -1308,6 +1308,7 @@ dependencies = [
  "num-rational",
  "num-traits",
  "rkyv",
+ "serde",
  "simba",
  "typenum",
 ]
@@ -1464,6 +1465,7 @@ dependencies = [
  "bytemuck",
  "num-traits",
  "rand 0.8.7",
+ "serde",
 ]
 
 [[package]]
