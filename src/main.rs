@@ -4,6 +4,7 @@ use faer::linalg::triangular_solve::solve_upper_triangular_in_place;
 use faer::{Col, Mat, MatRef, Par};
 use mnist::*;
 use nalgebra::{DMatrix, DVector, SVD, SymmetricEigen};
+use nalgebra_lapack::{QrDecomposition, colpiv_qr};
 use plotters::prelude::*;
 use rfd::FileDialog;
 use serde::{Deserialize, Serialize};
@@ -11,10 +12,10 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use std::time::Instant;
 
-const EPSILON: f64 = 1e-2;
-const N_TRAINING_SET: u32 = 20000;
+const EPSILON: f64 = 1e-6;
+const N_TRAINING_SET: u32 = 60000;
 const N_TESTING_SET: u32 = 10000;
-const PCA_COMPONENTS: usize = 20;
+const PCA_COMPONENTS: usize = 70;
 
 fn main() -> Result<()> {
     let Mnist {
@@ -185,7 +186,7 @@ fn qr_least_squares_faer(matrix: Mat<f64>, vector: Col<f64>, digit: u8) -> Weigh
     Weights::new(x.col_as_slice(0), digit)
 }
 
-fn svd_least_squares_lapack(x: DMatrix<f64>, y: &DVector<f64>, digit: u8) -> Weights {
+fn svd_least_squares_lapack_old(x: DMatrix<f64>, y: &DVector<f64>, digit: u8) -> Weights {
     let svd = nalgebra_lapack::SVD::new(x).unwrap();
 
     let epsilon = 1e-4;
@@ -213,6 +214,41 @@ fn svd_least_squares_lapack(x: DMatrix<f64>, y: &DVector<f64>, digit: u8) -> Wei
 
     // Finally multiply by V to get the least squares solution
     let solution = vt.transpose() * trimmed_ut_y;
+
+    Weights::new(solution.as_slice(), digit)
+}
+
+fn svd_least_squares_lapack(pseudo_inverse: &DMatrix<f64>, y: &DVector<f64>, digit: u8) -> Weights {
+    // let svd = nalgebra_lapack::SVD::new(x).unwrap();
+    // let pseudo_inverse = svd.pseudo_inverse(EPSILON);
+
+    let solution = pseudo_inverse * y;
+
+    // let epsilon = 1e-4;
+    //
+    // let max_singular_value = svd.singular_values[0];
+    //
+    // let rank = svd
+    //     .singular_values
+    //     .iter()
+    //     .filter(|&&s| s > epsilon * max_singular_value)
+    //     .count();
+    //
+    // println!("Rank: {}", rank);
+    //
+    // // Equation to solve is w = V * sigma^-1 * U^T * y
+    // let ut_y = svd.u.transpose() * y;
+    //
+    // let mut trimmed_ut_y = ut_y.rows(0, rank).into_owned();
+    //
+    // for i in 0..rank {
+    //     trimmed_ut_y[i] /= svd.singular_values[i];
+    // }
+    //
+    // let vt = svd.vt.rows(0, rank);
+    //
+    // // Finally multiply by V to get the least squares solution
+    // let solution = vt.transpose() * trimmed_ut_y;
 
     Weights::new(solution.as_slice(), digit)
 }
@@ -325,8 +361,9 @@ fn select_train_or_infer(
                 train_single_digit(trn_img, trn_lbl, digit_to_train, method)?;
             }
             1 => {
+                let library = select_training_library()?;
                 let method = select_training_method()?;
-                train_all_digits(trn_img, trn_lbl, method)?;
+                train_all_digits(trn_img, trn_lbl, library, method)?;
             }
             2 => {
                 let weights = get_weights()?;
@@ -344,74 +381,158 @@ fn select_train_or_infer(
 }
 
 enum Method {
-    Lapack,
-    NAlgebraQR,
-    FaerSVD,
-    FaerQR,
+    SVD,
+    QR,
 }
 
-fn train_all_digits(trn_img: &[u8], trn_lbl: &[u8], method: Method) -> Result<()> {
-    for i in 0..=9 {
-        println!("Training digit: {}", i);
+enum Library {
+    NAlgebra,
+    Faer,
+}
 
-        let start = Instant::now();
-        let weights = match method {
-            Method::Lapack => {
-                let (train_data, train_label) = prepare_train_data_nalgebra(trn_img, trn_lbl, i)?;
-                let mut pca = open_pca()?;
-                let z = pca_transform(&mut pca, &train_data, PCA_COMPONENTS);
-                let z = z.insert_column(0, 1.0);
-                svd_least_squares_lapack(z, &train_label, i)
-            }
-            Method::NAlgebraQR => {
-                let (train_data, train_label) = prepare_train_data_nalgebra(trn_img, trn_lbl, i)?;
-                qr_least_squares_nalgebra(train_data, &train_label, i)
-            }
-            Method::FaerSVD => {
-                let (train_data, train_label) = prepare_train_data_faer(trn_img, trn_lbl, i)?;
-                // let z = pca(train_data.clone());
-                svd_least_squares_faer(train_data, train_label, i)
-            }
-            Method::FaerQR => {
-                let (train_data, train_label) = prepare_train_data_faer(trn_img, trn_lbl, i)?;
-                qr_least_squares_faer(train_data, train_label, i)
-            }
-        };
-        println!("Time elapsed: {:?}", start.elapsed());
+fn train_all_digits(
+    trn_img: &[u8],
+    trn_lbl: &[u8],
+    library: Library,
+    method: Method,
+) -> Result<()> {
+    match library {
+        Library::NAlgebra => {
+            println!("pca");
+            let train_data = DMatrix::from_row_slice(N_TRAINING_SET as usize, 784, trn_img)
+                // .map(|pixel| if pixel as f64 > 0.0 { 1.0 } else { 0.0 });
+                .map(|pixel| pixel as f64 / 255.0);
+            let mut pca = open_pca()?;
+            let z = pca_transform(&mut pca, &train_data, PCA_COMPONENTS);
+            let z = z.insert_column(0, 1.0);
+            println!("end pca");
+            match method {
+                Method::SVD => {
+                    let start = Instant::now();
 
-        save_json(weights)?;
-    }
+                    let svd = nalgebra_lapack::SVD::new(z).unwrap();
+                    let pseudo_inverse = svd.pseudo_inverse(EPSILON);
+                    for i in 0..=9 {
+                        let train_label = DVector::from_row_slice(trn_lbl)
+                            .map(|digit| if digit == i { 1.0 } else { 0.0 });
+
+                        let weights = svd_least_squares_lapack(&pseudo_inverse, &train_label, i);
+                        save_json(weights)?;
+                    }
+                    println!("Time elapsed: {:?}", start.elapsed());
+                }
+                Method::QR => {
+                    println!("Before QR: {:?}", Instant::now());
+
+                    let start = Instant::now();
+                    let qr = nalgebra_lapack::QR::new(z)?;
+
+                    println!("QR elapsed: {:?}", start.elapsed());
+
+                    println!("After QR");
+
+                    for i in 0..=9 {
+                        println!("Training {i}");
+                        let train_label = DVector::from_row_slice(trn_lbl)
+                            .map(|digit| if digit == i { 1.0 } else { 0.0 });
+                        let solution = qr.solve(train_label)?;
+                        let weights = Weights::new(solution.as_slice(), i);
+                        save_json(weights)?;
+                    }
+                    println!("Time elapsed: {:?}", start.elapsed());
+                }
+            }
+        }
+        Library::Faer => match method {
+            Method::SVD => {
+                todo!();
+                // let (train_data, train_label) = prepare_train_data_faer(trn_img, trn_lbl, i)?;
+                // // let z = pca(train_data.clone());
+                // svd_least_squares_faer(train_data, train_label, i)
+            }
+            Method::QR => {
+                todo!();
+                // let (train_data, train_label) = prepare_train_data_faer(trn_img, trn_lbl, i)?;
+                // qr_least_squares_faer(train_data, train_label, i)
+            }
+        },
+    };
 
     Ok(())
 }
+
+// fn train_all_digits_old(trn_img: &[u8], trn_lbl: &[u8], method: Method) -> Result<()> {
+//     let train_data = DMatrix::from_row_slice(N_TRAINING_SET as usize, 784, trn_img)
+//         // .map(|pixel| if pixel as f64 > 0.0 { 1.0 } else { 0.0 });
+//         .map(|pixel| pixel as f64 / 255.0);
+//     let mut pca = open_pca()?;
+//     let z = pca_transform(&mut pca, &train_data, PCA_COMPONENTS);
+//     let z = z.insert_column(0, 1.0);
+//     let svd = nalgebra_lapack::SVD::new(z).unwrap();
+//     let pseudo_inverse = svd.pseudo_inverse(EPSILON);
+//
+//     for i in 0..=9 {
+//         println!("Training digit: {}", i);
+//
+//         let start = Instant::now();
+//         let weights = match method {
+//             Method::Lapack => {
+//                 // let (train_data, train_label) = prepare_train_data_nalgebra(trn_img, trn_lbl, i)?;
+//                 let train_label = DVector::from_row_slice(trn_lbl)
+//                     .map(|digit| if digit == i { 1.0 } else { 0.0 });
+//
+//                 svd_least_squares_lapack(&pseudo_inverse, &train_label, i)
+//             }
+//             Method::NAlgebraQR => {
+//                 let (train_data, train_label) = prepare_train_data_nalgebra(trn_img, trn_lbl, i)?;
+//                 qr_least_squares_nalgebra(train_data, &train_label, i)
+//             }
+//             Method::FaerSVD => {
+//                 let (train_data, train_label) = prepare_train_data_faer(trn_img, trn_lbl, i)?;
+//                 // let z = pca(train_data.clone());
+//                 svd_least_squares_faer(train_data, train_label, i)
+//             }
+//             Method::FaerQR => {
+//                 let (train_data, train_label) = prepare_train_data_faer(trn_img, trn_lbl, i)?;
+//                 qr_least_squares_faer(train_data, train_label, i)
+//             }
+//         };
+//         println!("Time elapsed: {:?}", start.elapsed());
+//
+//         save_json(weights)?;
+//     }
+//
+//     Ok(())
+// }
 
 fn train_single_digit(trn_img: &[u8], trn_lbl: &[u8], digit: u8, method: Method) -> Result<()> {
     println!("Training digit: {}", digit);
 
     let start = Instant::now();
+    todo!();
 
-    let weights = match method {
-        Method::Lapack => {
-            let (train_data, train_label) = prepare_train_data_nalgebra(trn_img, trn_lbl, digit)?;
-            svd_least_squares_lapack(train_data, &train_label, digit)
-        }
-        Method::NAlgebraQR => {
-            let (train_data, train_label) = prepare_train_data_nalgebra(trn_img, trn_lbl, digit)?;
-            qr_least_squares_nalgebra(train_data, &train_label, digit)
-        }
-        Method::FaerSVD => {
-            let (train_data, train_label) = prepare_train_data_faer(trn_img, trn_lbl, digit)?;
-            svd_least_squares_faer(train_data, train_label, digit)
-        }
-        Method::FaerQR => {
-            let (train_data, train_label) = prepare_train_data_faer(trn_img, trn_lbl, digit)?;
-            qr_least_squares_faer(train_data, train_label, digit)
-        }
-    };
-    println!("Time elapsed: {:?}", start.elapsed());
-    save_json(weights)?;
-
-    Ok(())
+    // let weights = match method {
+    //     Method::Lapack => {
+    //         let (train_data, train_label) = prepare_train_data_nalgebra(trn_img, trn_lbl, digit)?;
+    //         svd_least_squares_lapack(&train_data, &train_label, digit)
+    //     }
+    //     Method::NAlgebraQR => {
+    //         let (train_data, train_label) = prepare_train_data_nalgebra(trn_img, trn_lbl, digit)?;
+    //         qr_least_squares_nalgebra(train_data, &train_label, digit)
+    //     }
+    //     Method::FaerSVD => {
+    //         let (train_data, train_label) = prepare_train_data_faer(trn_img, trn_lbl, digit)?;
+    //         svd_least_squares_faer(train_data, train_label, digit)
+    //     }
+    //     Method::FaerQR => {
+    //         let (train_data, train_label) = prepare_train_data_faer(trn_img, trn_lbl, digit)?;
+    //         qr_least_squares_faer(train_data, train_label, digit)
+    //     }
+    // };
+    // println!("Time elapsed: {:?}", start.elapsed());
+    // save_json(weights)?;
+    //
+    // Ok(())
 }
 
 fn select_digit_to_train() -> Result<u8> {
@@ -427,18 +548,30 @@ fn select_digit_to_train() -> Result<u8> {
     Ok(digit)
 }
 
-fn select_training_method() -> Result<Method> {
-    let items = vec!["Faer SVD", "nAlgebra Lapack SVD", "nAlgebra QR", "Faer QR"];
+fn select_training_library() -> Result<Library> {
+    let items = vec!["Faer", "nAlgebra"];
     let selection = FuzzySelect::new()
         .with_prompt("Select and option:")
         .items(&items)
         .interact()?;
 
     match selection {
-        0 => Ok(Method::FaerSVD),
-        1 => Ok(Method::Lapack),
-        2 => Ok(Method::NAlgebraQR),
-        3 => Ok(Method::FaerQR),
+        0 => Ok(Library::Faer),
+        1 => Ok(Library::NAlgebra),
+        _ => todo!(),
+    }
+}
+
+fn select_training_method() -> Result<Method> {
+    let items = vec!["SVD", "QR"];
+    let selection = FuzzySelect::new()
+        .with_prompt("Select and option:")
+        .items(&items)
+        .interact()?;
+
+    match selection {
+        0 => Ok(Method::SVD),
+        1 => Ok(Method::QR),
         _ => todo!(),
     }
 }
@@ -546,16 +679,12 @@ fn digit_inference(tst_img: &[u8], tst_lbl: &[u8], weights: Vec<Weights>) -> Res
         // .map(|pixel| if pixel as f64 > 0.0 { 1.0 } else { 0.0 });
         .map(|pixel| pixel as f64 / 255.0);
 
-    // let z = pca_transform(test_data);
-
     let n_train = weights.first().unwrap().n_train.unwrap();
     let epsilon = weights.first().unwrap().epsilon.unwrap();
     let mut pca = open_pca()?;
 
     let z = pca_transform(&mut pca, &test_data, PCA_COMPONENTS);
     let z = z.insert_column(0, 1.0);
-
-    println!("PCA output: {} × {}", z.nrows(), z.ncols());
 
     let mut results: Vec<(u8, u8)> = vec![];
     let mut metrics: Vec<F1> = (0..10)
@@ -701,7 +830,7 @@ mod tests {
         let y = DVector::<f64>::from_vec(vec![2.0, 3.0, 7.0]);
         let digit = 0;
         let epsilon = 1e-12;
-        let result = svd_least_squares_lapack(x, &y, digit);
+        let result = svd_least_squares_lapack(&x, &y, digit);
 
         assert_relative_eq!(result.weights[..], &vec![2.5, -1.0], epsilon = epsilon);
     }
