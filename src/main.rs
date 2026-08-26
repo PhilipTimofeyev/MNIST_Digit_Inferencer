@@ -4,7 +4,7 @@ use faer::linalg::triangular_solve::solve_upper_triangular_in_place;
 use faer::{Col, Mat, MatRef, Par};
 use mnist::*;
 use nalgebra::{DMatrix, DVector, SymmetricEigen};
-use nalgebra_lapack::{QrDecomposition, SVD, colpiv_qr};
+use nalgebra_lapack::{QR, QrDecomposition, SVD, colpiv_qr};
 use plotters::prelude::*;
 use rfd::FileDialog;
 use serde::{Deserialize, Serialize};
@@ -181,9 +181,9 @@ fn qr_least_squares_faer(matrix: Mat<f64>, vector: Col<f64>, digit: u8) -> Weigh
 fn svd_nalagebra_lapack(matrix: DMatrix<f64>, use_pca: bool) -> Result<DMatrix<f64>> {
     if use_pca {
         let mut pca = open_pca()?;
-        let z = pca_transform(&mut pca, &matrix, PCA_COMPONENTS);
-        let z = z.insert_column(0, 1.0);
-        let pseudo_inverse = z.pseudo_inverse(EPSILON).unwrap();
+        let transformed_matrix = pca_transform(&mut pca, &matrix, PCA_COMPONENTS);
+        let transformed_matrix = transformed_matrix.insert_column(0, 1.0);
+        let pseudo_inverse = transformed_matrix.pseudo_inverse(EPSILON).unwrap();
         let rank = pseudo_inverse.rank(EPSILON);
         println!("Matrix Rank: {rank}");
         return Ok(pseudo_inverse);
@@ -218,6 +218,21 @@ fn svd_nalagebra_lapack(matrix: DMatrix<f64>, use_pca: bool) -> Result<DMatrix<f
     let pseudoinverse = vt * sigma_inv_ut;
 
     Ok(pseudoinverse)
+}
+
+fn qr_nalagebra_lapack(
+    matrix: DMatrix<f64>,
+    use_pca: bool,
+) -> Result<nalgebra_lapack::QR<f64, nalgebra::Dyn, nalgebra::Dyn>> {
+    if use_pca {
+        let mut pca = open_pca()?;
+        let transformed_matrix = pca_transform(&mut pca, &matrix, PCA_COMPONENTS);
+        let transformed_matrix = transformed_matrix.insert_column(0, 1.0);
+        let qr = nalgebra_lapack::QR::new(transformed_matrix)?;
+        return Ok(qr);
+    };
+
+    todo!();
 }
 
 fn qr_least_squares_nalgebra(x: DMatrix<f64>, y: &DVector<f64>, digit: u8) -> Weights {
@@ -369,12 +384,9 @@ fn train_all_digits(
 ) -> Result<()> {
     match library {
         Library::NAlgebra => {
-            // println!("pca");
             let train_data = DMatrix::from_row_slice(N_TRAINING_SET as usize, 784, trn_img)
                 // .map(|pixel| if pixel as f64 > 0.0 { 1.0 } else { 0.0 });
                 .map(|pixel| pixel as f64 / 255.0);
-
-            // println!("end pca");
             match method {
                 Method::SVD => {
                     let start = Instant::now();
@@ -383,20 +395,6 @@ fn train_all_digits(
                     for i in 0..=9 {
                         let train_label = DVector::from_row_slice(trn_lbl)
                             .map(|digit| if digit == i { 1.0 } else { 0.0 });
-
-                        println!(
-                            "rows: {} columns: {}",
-                            pseudo_inverse.nrows(),
-                            pseudo_inverse.ncols()
-                        );
-                        // let train_label = train_label.rows(0, pseudo_inverse.ncols());
-
-                        println!(
-                            "y rows: {} y cols: {}",
-                            train_label.nrows(),
-                            train_label.ncols()
-                        );
-
                         let weights = &pseudo_inverse * train_label;
                         let weights = Weights::new(weights.as_slice(), i, use_pca);
                         save_json(weights)?;
@@ -404,24 +402,24 @@ fn train_all_digits(
                     println!("Time elapsed: {:?}", start.elapsed());
                 }
                 Method::QR => {
-                    // println!("Before QR: {:?}", Instant::now());
-                    //
-                    // let start = Instant::now();
-                    // let qr = nalgebra_lapack::QR::new(z)?;
-                    //
-                    // println!("QR elapsed: {:?}", start.elapsed());
-                    //
-                    // println!("After QR");
-                    //
-                    // for i in 0..=9 {
-                    //     println!("Training {i}");
-                    //     let train_label = DVector::from_row_slice(trn_lbl)
-                    //         .map(|digit| if digit == i { 1.0 } else { 0.0 });
-                    //     let solution = qr.solve(train_label)?;
-                    //     let weights = Weights::new(solution.as_slice(), i);
-                    //     save_json(weights)?;
-                    // }
-                    // println!("Time elapsed: {:?}", start.elapsed());
+                    println!("Before QR: {:?}", Instant::now());
+
+                    let start = Instant::now();
+                    let qr = qr_nalagebra_lapack(train_data, use_pca)?;
+
+                    println!("QR elapsed: {:?}", start.elapsed());
+
+                    println!("After QR");
+
+                    for i in 0..=9 {
+                        println!("Training {i}");
+                        let train_label = DVector::from_row_slice(trn_lbl)
+                            .map(|digit| if digit == i { 1.0 } else { 0.0 });
+                        let solution = qr.solve(train_label)?;
+                        let weights = Weights::new(solution.as_slice(), i, use_pca);
+                        save_json(weights)?;
+                    }
+                    println!("Time elapsed: {:?}", start.elapsed());
                 }
             }
         }
