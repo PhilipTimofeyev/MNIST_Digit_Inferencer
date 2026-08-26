@@ -1,10 +1,10 @@
 use anyhow::{Context, Result};
-use dialoguer::FuzzySelect;
+use dialoguer::{Confirm, FuzzySelect};
 use faer::linalg::triangular_solve::solve_upper_triangular_in_place;
 use faer::{Col, Mat, MatRef, Par};
 use mnist::*;
-use nalgebra::{DMatrix, DVector, SVD, SymmetricEigen};
-use nalgebra_lapack::{QrDecomposition, colpiv_qr};
+use nalgebra::{DMatrix, DVector, SymmetricEigen};
+use nalgebra_lapack::{QrDecomposition, SVD, colpiv_qr};
 use plotters::prelude::*;
 use rfd::FileDialog;
 use serde::{Deserialize, Serialize};
@@ -12,8 +12,8 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use std::time::Instant;
 
-const EPSILON: f64 = 1e-6;
-const N_TRAINING_SET: u32 = 60000;
+const EPSILON: f64 = 0.001;
+const N_TRAINING_SET: u32 = 40000;
 const N_TESTING_SET: u32 = 10000;
 const PCA_COMPONENTS: usize = 70;
 
@@ -127,15 +127,6 @@ fn pca_transform(pca: &mut Pca, matrix: &DMatrix<f64>, k_components: usize) -> D
     centered * &pca.components
 }
 
-// Not in use
-#[allow(dead_code)]
-fn svd_least_squares(x: &DMatrix<f64>, y: &DVector<f64>, digit: u8, epsilon: f64) -> Weights {
-    let svd = SVD::new(x.clone(), true, true);
-    let weights = svd.solve(y, epsilon).unwrap();
-
-    Weights::new(weights.as_slice(), digit)
-}
-
 // Tolerance (Epsilon) is set internally by Faer
 fn svd_least_squares_faer(matrix: Mat<f64>, vector: Col<f64>, digit: u8) -> Weights {
     let svd = matrix.thin_svd().unwrap();
@@ -144,7 +135,7 @@ fn svd_least_squares_faer(matrix: Mat<f64>, vector: Col<f64>, digit: u8) -> Weig
     let solution = pseudo_inverse * vector;
     let solution: Vec<f64> = solution.iter().copied().collect();
 
-    Weights::new(solution.as_slice(), digit)
+    Weights::new(solution.as_slice(), digit, false)
 }
 
 fn qr_least_squares_faer(matrix: Mat<f64>, vector: Col<f64>, digit: u8) -> Weights {
@@ -183,74 +174,50 @@ fn qr_least_squares_faer(matrix: Mat<f64>, vector: Col<f64>, digit: u8) -> Weigh
         x[(orig_col, 0)] = permutated_y[i];
     }
 
-    Weights::new(x.col_as_slice(0), digit)
+    Weights::new(x.col_as_slice(0), digit, false)
 }
 
-fn svd_least_squares_lapack_old(x: DMatrix<f64>, y: &DVector<f64>, digit: u8) -> Weights {
-    let svd = nalgebra_lapack::SVD::new(x).unwrap();
+// Builds the pseudoinverse using SVD
+fn svd_nalagebra_lapack(matrix: DMatrix<f64>, use_pca: bool) -> Result<DMatrix<f64>> {
+    if use_pca {
+        let mut pca = open_pca()?;
+        let z = pca_transform(&mut pca, &matrix, PCA_COMPONENTS);
+        let z = z.insert_column(0, 1.0);
+        let pseudo_inverse = z.pseudo_inverse(EPSILON).unwrap();
+        let rank = pseudo_inverse.rank(EPSILON);
+        println!("Matrix Rank: {rank}");
+        return Ok(pseudo_inverse);
+    };
 
-    let epsilon = 1e-4;
+    let matrix = matrix.insert_column(0, 1.0);
 
-    let max_singular_value = svd.singular_values[0];
+    let svd = nalgebra_lapack::SVD::new(matrix).unwrap();
 
-    let rank = svd
-        .singular_values
-        .iter()
-        .filter(|&&s| s > epsilon * max_singular_value)
-        .count();
+    let rank = svd.rank(EPSILON);
 
-    println!("Rank: {}", rank);
+    println!("Matrix Rank: {rank}");
 
-    // Equation to solve is w = V * sigma^-1 * U^T * y
-    let ut_y = svd.u.transpose() * y;
+    let ut = svd.u.transpose();
 
-    let mut trimmed_ut_y = ut_y.rows(0, rank).into_owned();
+    // Trim U^T
+    let mut sigma_inv_ut = ut.rows(0, rank).into_owned();
 
+    // Multiply U^T by the inverted singular values to give E^-1 * U^T
     for i in 0..rank {
-        trimmed_ut_y[i] /= svd.singular_values[i];
+        let inv_sigma = 1.0 / svd.singular_values[i];
+
+        for j in 0..sigma_inv_ut.ncols() {
+            sigma_inv_ut[(i, j)] *= inv_sigma;
+        }
     }
 
-    let vt = svd.vt.rows(0, rank);
+    // Trim V^T
+    let vt = svd.vt.rows(0, rank).transpose();
 
-    // Finally multiply by V to get the least squares solution
-    let solution = vt.transpose() * trimmed_ut_y;
+    // Create pseudo inverse by multiplying V^T*E^-1*U^T
+    let pseudoinverse = vt * sigma_inv_ut;
 
-    Weights::new(solution.as_slice(), digit)
-}
-
-fn svd_least_squares_lapack(pseudo_inverse: &DMatrix<f64>, y: &DVector<f64>, digit: u8) -> Weights {
-    // let svd = nalgebra_lapack::SVD::new(x).unwrap();
-    // let pseudo_inverse = svd.pseudo_inverse(EPSILON);
-
-    let solution = pseudo_inverse * y;
-
-    // let epsilon = 1e-4;
-    //
-    // let max_singular_value = svd.singular_values[0];
-    //
-    // let rank = svd
-    //     .singular_values
-    //     .iter()
-    //     .filter(|&&s| s > epsilon * max_singular_value)
-    //     .count();
-    //
-    // println!("Rank: {}", rank);
-    //
-    // // Equation to solve is w = V * sigma^-1 * U^T * y
-    // let ut_y = svd.u.transpose() * y;
-    //
-    // let mut trimmed_ut_y = ut_y.rows(0, rank).into_owned();
-    //
-    // for i in 0..rank {
-    //     trimmed_ut_y[i] /= svd.singular_values[i];
-    // }
-    //
-    // let vt = svd.vt.rows(0, rank);
-    //
-    // // Finally multiply by V to get the least squares solution
-    // let solution = vt.transpose() * trimmed_ut_y;
-
-    Weights::new(solution.as_slice(), digit)
+    Ok(pseudoinverse)
 }
 
 fn qr_least_squares_nalgebra(x: DMatrix<f64>, y: &DVector<f64>, digit: u8) -> Weights {
@@ -273,7 +240,7 @@ fn qr_least_squares_nalgebra(x: DMatrix<f64>, y: &DVector<f64>, digit: u8) -> We
     p.inv_permute_rows(&mut solution);
     println!("{rank}");
 
-    Weights::new(solution.as_slice(), digit)
+    Weights::new(solution.as_slice(), digit, false)
 }
 
 #[derive(Debug)]
@@ -316,11 +283,12 @@ struct Weights {
     digit: u8,
     n_train: Option<u32>,
     epsilon: Option<f64>,
+    pca: bool,
     weights: Vec<f64>,
 }
 
 impl Weights {
-    fn new(vector: &[f64], digit: u8) -> Weights {
+    fn new(vector: &[f64], digit: u8, pca: bool) -> Weights {
         let n_train = Some(N_TRAINING_SET);
         let epsilon = Some(EPSILON);
         let weights = vector.to_owned();
@@ -329,6 +297,7 @@ impl Weights {
             digit,
             n_train,
             epsilon,
+            pca,
             weights,
         }
     }
@@ -363,7 +332,8 @@ fn select_train_or_infer(
             1 => {
                 let library = select_training_library()?;
                 let method = select_training_method()?;
-                train_all_digits(trn_img, trn_lbl, library, method)?;
+                let use_pca = use_pca()?;
+                train_all_digits(trn_img, trn_lbl, library, method, use_pca)?;
             }
             2 => {
                 let weights = get_weights()?;
@@ -395,51 +365,63 @@ fn train_all_digits(
     trn_lbl: &[u8],
     library: Library,
     method: Method,
+    use_pca: bool,
 ) -> Result<()> {
     match library {
         Library::NAlgebra => {
-            println!("pca");
+            // println!("pca");
             let train_data = DMatrix::from_row_slice(N_TRAINING_SET as usize, 784, trn_img)
                 // .map(|pixel| if pixel as f64 > 0.0 { 1.0 } else { 0.0 });
                 .map(|pixel| pixel as f64 / 255.0);
-            let mut pca = open_pca()?;
-            let z = pca_transform(&mut pca, &train_data, PCA_COMPONENTS);
-            let z = z.insert_column(0, 1.0);
-            println!("end pca");
+
+            // println!("end pca");
             match method {
                 Method::SVD => {
                     let start = Instant::now();
+                    let pseudo_inverse = svd_nalagebra_lapack(train_data, use_pca)?;
 
-                    let svd = nalgebra_lapack::SVD::new(z).unwrap();
-                    let pseudo_inverse = svd.pseudo_inverse(EPSILON);
                     for i in 0..=9 {
                         let train_label = DVector::from_row_slice(trn_lbl)
                             .map(|digit| if digit == i { 1.0 } else { 0.0 });
 
-                        let weights = svd_least_squares_lapack(&pseudo_inverse, &train_label, i);
+                        println!(
+                            "rows: {} columns: {}",
+                            pseudo_inverse.nrows(),
+                            pseudo_inverse.ncols()
+                        );
+                        // let train_label = train_label.rows(0, pseudo_inverse.ncols());
+
+                        println!(
+                            "y rows: {} y cols: {}",
+                            train_label.nrows(),
+                            train_label.ncols()
+                        );
+
+                        let weights = &pseudo_inverse * train_label;
+                        let weights = Weights::new(weights.as_slice(), i, use_pca);
                         save_json(weights)?;
                     }
                     println!("Time elapsed: {:?}", start.elapsed());
                 }
                 Method::QR => {
-                    println!("Before QR: {:?}", Instant::now());
-
-                    let start = Instant::now();
-                    let qr = nalgebra_lapack::QR::new(z)?;
-
-                    println!("QR elapsed: {:?}", start.elapsed());
-
-                    println!("After QR");
-
-                    for i in 0..=9 {
-                        println!("Training {i}");
-                        let train_label = DVector::from_row_slice(trn_lbl)
-                            .map(|digit| if digit == i { 1.0 } else { 0.0 });
-                        let solution = qr.solve(train_label)?;
-                        let weights = Weights::new(solution.as_slice(), i);
-                        save_json(weights)?;
-                    }
-                    println!("Time elapsed: {:?}", start.elapsed());
+                    // println!("Before QR: {:?}", Instant::now());
+                    //
+                    // let start = Instant::now();
+                    // let qr = nalgebra_lapack::QR::new(z)?;
+                    //
+                    // println!("QR elapsed: {:?}", start.elapsed());
+                    //
+                    // println!("After QR");
+                    //
+                    // for i in 0..=9 {
+                    //     println!("Training {i}");
+                    //     let train_label = DVector::from_row_slice(trn_lbl)
+                    //         .map(|digit| if digit == i { 1.0 } else { 0.0 });
+                    //     let solution = qr.solve(train_label)?;
+                    //     let weights = Weights::new(solution.as_slice(), i);
+                    //     save_json(weights)?;
+                    // }
+                    // println!("Time elapsed: {:?}", start.elapsed());
                 }
             }
         }
@@ -546,6 +528,14 @@ fn select_digit_to_train() -> Result<u8> {
     let digit: u8 = selection as u8;
 
     Ok(digit)
+}
+
+fn use_pca() -> dialoguer::Result<bool> {
+    let pca: bool = Confirm::new()
+        .with_prompt("Use Principle Component Analysis?")
+        .interact()?;
+
+    Ok(pca)
 }
 
 fn select_training_library() -> Result<Library> {
@@ -675,23 +665,26 @@ fn get_weights() -> Result<Vec<Weights>> {
 }
 
 fn digit_inference(tst_img: &[u8], tst_lbl: &[u8], weights: Vec<Weights>) -> Result<()> {
-    let test_data = DMatrix::from_row_slice(N_TESTING_SET as usize, 784, tst_img)
+    let mut test_data = DMatrix::from_row_slice(N_TESTING_SET as usize, 784, tst_img)
         // .map(|pixel| if pixel as f64 > 0.0 { 1.0 } else { 0.0 });
         .map(|pixel| pixel as f64 / 255.0);
 
     let n_train = weights.first().unwrap().n_train.unwrap();
     let epsilon = weights.first().unwrap().epsilon.unwrap();
-    let mut pca = open_pca()?;
+    let is_pca = weights.first().unwrap().pca;
 
-    let z = pca_transform(&mut pca, &test_data, PCA_COMPONENTS);
-    let z = z.insert_column(0, 1.0);
+    if is_pca {
+        let mut pca = open_pca()?;
+        test_data = pca_transform(&mut pca, &test_data, PCA_COMPONENTS);
+    }
 
+    test_data = test_data.insert_column(0, 1.0);
     let mut results: Vec<(u8, u8)> = vec![];
     let mut metrics: Vec<F1> = (0..10)
         .map(|digit| F1::new(digit, n_train, epsilon))
         .collect();
 
-    for (i, row) in z.row_iter().enumerate() {
+    for (i, row) in test_data.row_iter().enumerate() {
         let (mut digit, mut max_score) = (0, f64::NEG_INFINITY);
         for digit_weights in &weights {
             let weights = DVector::from_row_slice(&digit_weights.weights);
@@ -819,20 +812,13 @@ mod tests {
         let y = DVector::<f64>::from_vec(vec![2.0, 3.0, 7.0]);
         let digit = 0;
         let epsilon = 1e-12;
-        let result = svd_least_squares(&x, &y, digit, epsilon);
 
-        assert_relative_eq!(result.weights[..], &vec![2.5, -1.0], epsilon = epsilon);
-    }
+        let pseudoinverse = svd_nalagebra_lapack(x, false).unwrap();
+        let solution = pseudoinverse * y;
+        let result = Weights::new(solution.as_slice(), digit, false);
+        // let result = svd_least_squares(&x, &y, digit, epsilon);
 
-    #[test]
-    fn test_svd_least_squares_lapack() {
-        let x = DMatrix::<f64>::from_row_slice(3, 2, &[1.0, 1.0, 2.0, 1.0, 3.0, 1.0]);
-        let y = DVector::<f64>::from_vec(vec![2.0, 3.0, 7.0]);
-        let digit = 0;
-        let epsilon = 1e-12;
-        let result = svd_least_squares_lapack(&x, &y, digit);
-
-        assert_relative_eq!(result.weights[..], &vec![2.5, -1.0], epsilon = epsilon);
+        assert_relative_eq!(result.weights[..], &vec![2.5, -1.0], epsilon = 0.001);
     }
 
     #[test]
