@@ -4,6 +4,7 @@ use faer::linalg::triangular_solve::solve_upper_triangular_in_place;
 use faer::{Col, Mat, MatRef, Par};
 use mnist::*;
 use nalgebra::{DMatrix, DVector, SymmetricEigen};
+use nalgebra_lapack::colpiv_qr::Permutation;
 use nalgebra_lapack::{QR, QrDecomposition, SVD, colpiv_qr};
 use plotters::prelude::*;
 use rfd::FileDialog;
@@ -12,10 +13,10 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use std::time::Instant;
 
-const EPSILON: f64 = 0.001;
-const N_TRAINING_SET: u32 = 4000;
+const EPSILON: f64 = 1e-8;
+const N_TRAINING_SET: u32 = 1201;
 const N_TESTING_SET: u32 = 10000;
-const PCA_COMPONENTS: usize = 110;
+const PCA_COMPONENTS: usize = 70;
 
 fn main() -> Result<()> {
     let Mnist {
@@ -178,7 +179,7 @@ fn qr_least_squares_faer(matrix: Mat<f64>, vector: Col<f64>, digit: u8) -> Weigh
 }
 
 // Builds the pseudoinverse using SVD
-fn svd_nalagebra_lapack(matrix: DMatrix<f64>) -> Result<DMatrix<f64>> {
+fn svd_nalgebra_lapack(matrix: DMatrix<f64>) -> Result<DMatrix<f64>> {
     let matrix = matrix.insert_column(0, 1.0);
 
     let svd = nalgebra_lapack::SVD::new(matrix).unwrap();
@@ -221,44 +222,46 @@ fn svd_nalgebra_lapack_pca(matrix: DMatrix<f64>) -> Result<DMatrix<f64>> {
     Ok(pseudo_inverse)
 }
 
-fn qr_nalgebra_lapack(
+fn qr_nalgebra_lapack_pca(
     matrix: DMatrix<f64>,
-    use_pca: bool,
 ) -> Result<nalgebra_lapack::QR<f64, nalgebra::Dyn, nalgebra::Dyn>> {
-    if use_pca {
-        let mut pca = open_pca()?;
-        let transformed_matrix = pca_transform(&mut pca, &matrix, PCA_COMPONENTS);
-        let transformed_matrix = transformed_matrix.insert_column(0, 1.0);
-        let qr = nalgebra_lapack::QR::new(transformed_matrix)?;
-        return Ok(qr);
-    };
-
-    todo!();
+    let mut pca = open_pca()?;
+    let transformed_matrix = pca_transform(&mut pca, &matrix, PCA_COMPONENTS);
+    let transformed_matrix = transformed_matrix.insert_column(0, 1.0);
+    let qr = nalgebra_lapack::QR::new(transformed_matrix)?;
+    Ok(qr)
 }
 
 // QR nAlgebra without PCA
-#[allow(dead_code)]
-fn qr_least_squares_nalgebra(x: DMatrix<f64>, y: &DVector<f64>, digit: u8) -> Weights {
+fn qr_nalgebra_lapack(
+    x: DMatrix<f64>,
+) -> (
+    DMatrix<f64>,
+    DMatrix<f64>,
+    nalgebra::PermutationSequence<nalgebra::Dyn>,
+) {
     let qr = x.col_piv_qr();
 
     let (q, rt, p) = qr.unpack();
-    let qtb = q.transpose() * y;
+    let qt = q.transpose();
 
     let rank = (0..rt.nrows().min(rt.ncols()))
         .take_while(|&i| rt[(i, i)].abs() > EPSILON)
         .count();
 
-    let qtb_trimmed = qtb.rows(0, rank).into_owned();
-    let rt_trimmed = rt.view((0, 0), (rank, rank));
+    let qt_trimmed = qt.rows(0, rank).into_owned();
+    let rt_trimmed = rt.view((0, 0), (rank, rank)).into_owned();
 
-    let solution_trimmed = rt_trimmed.solve_upper_triangular(&qtb_trimmed).unwrap();
-
-    let mut solution = solution_trimmed.resize_vertically(785, 0.0);
-
-    p.inv_permute_rows(&mut solution);
-    println!("{rank}");
-
-    Weights::new(solution.as_slice(), digit, false)
+    (qt_trimmed, rt_trimmed, p)
+    //
+    // let solution_trimmed = rt_trimmed.solve_upper_triangular(&qtb_trimmed).unwrap();
+    //
+    // let mut solution = solution_trimmed.resize_vertically(785, 0.0);
+    //
+    // p.inv_permute_rows(&mut solution);
+    // println!("{rank}");
+    //
+    // Weights::new(solution.as_slice(), digit, false)
 }
 
 #[derive(Debug)]
@@ -399,9 +402,7 @@ fn train_all_digits(
 ) -> Result<()> {
     match library {
         Library::NAlgebra => {
-            let train_data = DMatrix::from_row_slice(N_TRAINING_SET as usize, 784, trn_img)
-                // .map(|pixel| if pixel as f64 > 0.0 { 1.0 } else { 0.0 });
-                .map(|pixel| pixel as f64 / 255.0);
+            let train_data = prepare_trn_img_nalgebra(trn_img);
             match method {
                 Method::SVD => {
                     let start = Instant::now();
@@ -409,31 +410,40 @@ fn train_all_digits(
                     let pseudo_inverse = if use_pca {
                         svd_nalgebra_lapack_pca(train_data)?
                     } else {
-                        svd_nalagebra_lapack(train_data)?
+                        svd_nalgebra_lapack(train_data)?
                     };
 
                     svd_train_digits(pseudo_inverse, trn_lbl, use_pca)?;
                     println!("Time elapsed: {:?}", start.elapsed());
                 }
                 Method::QR => {
-                    println!("Before QR: {:?}", Instant::now());
-
                     let start = Instant::now();
-                    let qr = qr_nalgebra_lapack(train_data, use_pca)?;
+
+                    if use_pca {
+                        let qr = qr_nalgebra_lapack_pca(train_data)?;
+                        for digit in 0..=9 {
+                            println!("Training {digit}");
+                            let train_label = prepare_trn_lbl_nalgebra(trn_lbl, digit);
+                            let solution = qr.solve(train_label)?;
+                            let weights = Weights::new(solution.as_slice(), digit, use_pca);
+                            save_json(weights)?;
+                        }
+                    } else {
+                        let train_data = train_data.insert_column(0, 1.0);
+                        let (q, rt, p) = qr_nalgebra_lapack(train_data);
+                        for digit in 0..=9 {
+                            println!("Training {digit}");
+                            let train_label = prepare_trn_lbl_nalgebra(trn_lbl, digit);
+                            let qtb = &q * train_label;
+                            let solution = rt.solve_upper_triangular(&qtb).unwrap();
+                            let mut solution = solution.resize_vertically(785, 0.0);
+                            p.inv_permute_rows(&mut solution);
+                            let weights = Weights::new(solution.as_slice(), digit, use_pca);
+                            save_json(weights)?;
+                        }
+                    }
 
                     println!("QR elapsed: {:?}", start.elapsed());
-
-                    println!("After QR");
-
-                    for i in 0..=9 {
-                        println!("Training {i}");
-                        let train_label = DVector::from_row_slice(trn_lbl)
-                            .map(|digit| if digit == i { 1.0 } else { 0.0 });
-                        let solution = qr.solve(train_label)?;
-                        let weights = Weights::new(solution.as_slice(), i, use_pca);
-                        save_json(weights)?;
-                    }
-                    println!("Time elapsed: {:?}", start.elapsed());
                 }
             }
         }
@@ -534,22 +544,14 @@ fn select_training_method() -> Result<Method> {
     }
 }
 
-fn prepare_train_data_nalgebra(
-    trn_img: &[u8],
-    trn_lbl: &[u8],
-    digit_to_train: u8,
-) -> Result<(DMatrix<f64>, DVector<f64>)> {
-    let train_data = DMatrix::from_row_slice(N_TRAINING_SET as usize, 784, trn_img)
+fn prepare_trn_img_nalgebra(trn_img: &[u8]) -> DMatrix<f64> {
+    DMatrix::from_row_slice(N_TRAINING_SET as usize, 784, trn_img)
         // .map(|pixel| if pixel as f64 > 0.0 { 1.0 } else { 0.0 });
-        .map(|pixel| pixel as f64 / 255.0);
+        .map(|pixel| pixel as f64 / 255.0)
+}
 
-    // // Add bias term in the form of a column of 1's
-    // let train_data = train_data.insert_column(0, 1.0);
-
-    let train_label = DVector::from_row_slice(trn_lbl)
-        .map(|digit| if digit == digit_to_train { 1.0 } else { 0.0 });
-
-    Ok((train_data, train_label))
+fn prepare_trn_lbl_nalgebra(trn_lbl: &[u8], digit_to_train: u8) -> DVector<f64> {
+    DVector::from_row_slice(trn_lbl).map(|digit| if digit == digit_to_train { 1.0 } else { 0.0 })
 }
 
 fn prepare_train_data_faer(
@@ -781,7 +783,7 @@ mod tests {
         let digit = 0;
         let epsilon = 1e-12;
 
-        let pseudoinverse = svd_nalagebra_lapack(x, false).unwrap();
+        let pseudoinverse = svd_nalgebra_lapack(x).unwrap();
         let solution = pseudoinverse * y;
         let result = Weights::new(solution.as_slice(), digit, false);
         // let result = svd_least_squares(&x, &y, digit, epsilon);
