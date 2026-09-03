@@ -14,9 +14,9 @@ use std::io::{BufReader, BufWriter};
 use std::time::Instant;
 
 const EPSILON: f64 = 1e-8;
-const N_TRAINING_SET: u32 = 1201;
+const N_TRAINING_SET: u32 = 9999;
 const N_TESTING_SET: u32 = 10000;
-const PCA_COMPONENTS: usize = 70;
+const PCA_COMPONENTS: usize = 30;
 
 fn main() -> Result<()> {
     let Mnist {
@@ -82,12 +82,17 @@ fn fit_pca(trn_img: &[u8]) -> Pca {
         means[j] = sum / m as f64;
     }
 
+    // Center the data using the means
     let centered = DMatrix::from_fn(m, n, |i, j| matrix[(i, j)] - means[j]);
 
     // make sure not to divide by 0
     let denominater = if m > 1 { (m - 1) as f64 } else { 1.0 };
+    // Build covariance matrix which represents how feature change together
+    // The diagonal represents the variance of each specific feature
     let covariance_matrix = (&centered.transpose() * &centered) / denominater;
 
+    // Get the eigendecomposition, eigenvectors represent the directions of maximum variance
+    // The eigenvalues represent the amount of variance in an eigenvector
     let eigen = SymmetricEigen::new(covariance_matrix);
 
     let mut eigenpairs: Vec<(f64, DVector<f64>)> = (0..n)
@@ -99,9 +104,11 @@ fn fit_pca(trn_img: &[u8]) -> Pca {
         })
         .collect();
 
-    // Sort by eigenvalue, largest first
+    // Sort by eigenvalue, largest first to denote which direction has the most
+    // variance/significance
     eigenpairs.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
 
+    // Sets the number of components
     let k = 784;
 
     let components = DMatrix::from_columns(
@@ -222,6 +229,7 @@ fn svd_nalgebra_lapack_pca(matrix: DMatrix<f64>) -> Result<DMatrix<f64>> {
     Ok(pseudo_inverse)
 }
 
+// Returns the factorized A matrix as QR
 fn qr_nalgebra_lapack_pca(
     matrix: DMatrix<f64>,
 ) -> Result<nalgebra_lapack::QR<f64, nalgebra::Dyn, nalgebra::Dyn>> {
@@ -233,6 +241,7 @@ fn qr_nalgebra_lapack_pca(
 }
 
 // QR nAlgebra without PCA
+// Returns a tuple containing a trimmed version of Q and R matrices
 fn qr_nalgebra_lapack(
     x: DMatrix<f64>,
 ) -> (
@@ -253,15 +262,6 @@ fn qr_nalgebra_lapack(
     let rt_trimmed = rt.view((0, 0), (rank, rank)).into_owned();
 
     (qt_trimmed, rt_trimmed, p)
-    //
-    // let solution_trimmed = rt_trimmed.solve_upper_triangular(&qtb_trimmed).unwrap();
-    //
-    // let mut solution = solution_trimmed.resize_vertically(785, 0.0);
-    //
-    // p.inv_permute_rows(&mut solution);
-    // println!("{rank}");
-    //
-    // Weights::new(solution.as_slice(), digit, false)
 }
 
 #[derive(Debug)]
