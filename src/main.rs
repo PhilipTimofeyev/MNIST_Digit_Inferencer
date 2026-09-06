@@ -14,7 +14,7 @@ use std::time::Instant;
 
 const EPSILON: f64 = 1e-8;
 const N_TRAINING_SET: u32 = 1000;
-const N_TESTING_SET: u32 = 10;
+const N_TESTING_SET: u32 = 10000;
 const PCA_COMPONENTS: usize = 30;
 const EPOCHS: usize = 20;
 const ALPHA: f64 = 1.0; // Learning Rate
@@ -50,9 +50,8 @@ struct Model {
 #[derive(Serialize, Deserialize, Debug)]
 enum ModelType {
     LinearRegression {
-        digit: u8,
-        weights: DVector<f64>,
-        epsilon: Option<f64>,
+        weights: DMatrix<f64>,
+        epsilon: f64,
     },
 
     LogisticRegression {
@@ -115,16 +114,12 @@ fn logistic_regression(x: &DMatrix<f64>, y: &DMatrix<f64>) -> Model {
 }
 
 // Saves weights to a new folder with the name structure of "weights_N TRAINING SIZE_EPSILON"
-fn save_weights_(weights: Model) -> Result<()> {
+fn save_weights(weights: Model) -> Result<()> {
     let path = std::path::Path::new("./weights");
     std::fs::create_dir_all(path)?;
 
     let filename = match &weights.model {
-        ModelType::LinearRegression {
-            digit,
-            weights,
-            epsilon,
-        } => {
+        ModelType::LinearRegression { weights, epsilon } => {
             let folder = String::from("linear_regression");
             std::fs::create_dir_all(format!("weights/{}", folder))?;
             format!("weights/{}/test_linear", folder)
@@ -149,7 +144,7 @@ fn save_weights_(weights: Model) -> Result<()> {
     Ok(())
 }
 
-fn get_weights_() -> Result<Model> {
+fn get_weights() -> Result<Model> {
     let folder = FileDialog::new()
         .set_title("Select the weights")
         .pick_file();
@@ -295,54 +290,54 @@ fn pca_transform(pca: &mut Pca, matrix: &DMatrix<f64>, k_components: usize) -> D
 }
 
 // Tolerance (Epsilon) is set internally by Faer
-fn svd_least_squares_faer(matrix: Mat<f64>, vector: Col<f64>, digit: u8) -> Weights {
-    let svd = matrix.thin_svd().unwrap();
+// fn svd_least_squares_faer(matrix: Mat<f64>, vector: Col<f64>, digit: u8) -> Weights {
+//     let svd = matrix.thin_svd().unwrap();
+//
+//     let pseudo_inverse = svd.pseudoinverse();
+//     let solution = pseudo_inverse * vector;
+//     let solution: Vec<f64> = solution.iter().copied().collect();
+//
+//     Weights::new(solution.as_slice(), digit, false)
+// }
 
-    let pseudo_inverse = svd.pseudoinverse();
-    let solution = pseudo_inverse * vector;
-    let solution: Vec<f64> = solution.iter().copied().collect();
-
-    Weights::new(solution.as_slice(), digit, false)
-}
-
-fn qr_least_squares_faer(matrix: Mat<f64>, vector: Col<f64>, digit: u8) -> Weights {
-    let qr = matrix.col_piv_qr();
-    let q = qr.compute_thin_Q();
-    let rt = qr.R().to_owned();
-
-    let rank = (0..rt.nrows().min(rt.ncols()))
-        .take_while(|&i| rt[(i, i)].abs() > EPSILON)
-        .count();
-
-    println!("Rank: {rank}");
-
-    // Q^T * b
-    let qtb = q.transpose() * vector;
-
-    let (qtb_truncated, _discard) = qtb.split_at_row(rank);
-    let mut qtb_truncated = qtb_truncated.to_owned();
-
-    // R (upper right triangle matrix)
-    let rt = rt.submatrix(0, 0, rank, rank);
-
-    solve_upper_triangular_in_place(rt, qtb_truncated.as_mat_mut(), Par::rayon(0));
-    // solve_upper_triangular_in_place(rt, qtb_truncated.as_mat_mut(), Par::Seq);
-
-    let mut permutated_y = qtb_truncated;
-    permutated_y.resize_with(matrix.ncols(), |_| 0.0);
-
-    let p = qr.P();
-
-    let (forward_idx, _inverse_idx) = p.arrays();
-
-    let mut x = Mat::<f64>::zeros(permutated_y.nrows(), 1);
-
-    for (i, &orig_col) in forward_idx.iter().enumerate() {
-        x[(orig_col, 0)] = permutated_y[i];
-    }
-
-    Weights::new(x.col_as_slice(0), digit, false)
-}
+// fn qr_least_squares_faer(matrix: Mat<f64>, vector: Col<f64>, digit: u8) -> Weights {
+//     let qr = matrix.col_piv_qr();
+//     let q = qr.compute_thin_Q();
+//     let rt = qr.R().to_owned();
+//
+//     let rank = (0..rt.nrows().min(rt.ncols()))
+//         .take_while(|&i| rt[(i, i)].abs() > EPSILON)
+//         .count();
+//
+//     println!("Rank: {rank}");
+//
+//     // Q^T * b
+//     let qtb = q.transpose() * vector;
+//
+//     let (qtb_truncated, _discard) = qtb.split_at_row(rank);
+//     let mut qtb_truncated = qtb_truncated.to_owned();
+//
+//     // R (upper right triangle matrix)
+//     let rt = rt.submatrix(0, 0, rank, rank);
+//
+//     solve_upper_triangular_in_place(rt, qtb_truncated.as_mat_mut(), Par::rayon(0));
+//     // solve_upper_triangular_in_place(rt, qtb_truncated.as_mat_mut(), Par::Seq);
+//
+//     let mut permutated_y = qtb_truncated;
+//     permutated_y.resize_with(matrix.ncols(), |_| 0.0);
+//
+//     let p = qr.P();
+//
+//     let (forward_idx, _inverse_idx) = p.arrays();
+//
+//     let mut x = Mat::<f64>::zeros(permutated_y.nrows(), 1);
+//
+//     for (i, &orig_col) in forward_idx.iter().enumerate() {
+//         x[(orig_col, 0)] = permutated_y[i];
+//     }
+//
+//     Weights::new(x.col_as_slice(0), digit, false)
+// }
 
 // Builds the pseudoinverse using SVD
 fn svd_nalgebra_lapack(matrix: DMatrix<f64>) -> Result<DMatrix<f64>> {
@@ -458,31 +453,6 @@ impl F1 {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-struct Weights {
-    digit: u8,
-    n_train: Option<u32>,
-    epsilon: Option<f64>,
-    pca: bool,
-    weights: Vec<f64>,
-}
-
-impl Weights {
-    fn new(vector: &[f64], digit: u8, pca: bool) -> Weights {
-        let n_train = Some(N_TRAINING_SET);
-        let epsilon = Some(EPSILON);
-        let weights = vector.to_owned();
-
-        Weights {
-            digit,
-            n_train,
-            epsilon,
-            pca,
-            weights,
-        }
-    }
-}
-
 fn select_train_or_infer(
     trn_img: &[u8],
     trn_lbl: &[u8],
@@ -518,14 +488,14 @@ fn select_train_or_infer(
             }
             2 => {
                 let weights = get_weights()?;
-                digit_inference(tst_img, tst_lbl, weights)?
+                // digit_inference(tst_img, tst_lbl, weights)?
             }
             3 => {
                 let x = DMatrix::from_row_slice(N_TESTING_SET as usize, 784, tst_img)
                     .map(|pixel| pixel as f64 / 255.0);
                 let x = x.insert_column(0, 1.0);
 
-                let weights = get_weights_()?;
+                let weights = get_weights()?;
                 // let file = File::open("logistic.json")?;
                 // let weights: Vec<Vec<f64>> = serde_json::from_reader(file)?;
                 let weights = match weights.model {
@@ -534,11 +504,7 @@ fn select_train_or_infer(
                         learning_rate: _,
                         epochs: _,
                     } => weights,
-                    ModelType::LinearRegression {
-                        digit,
-                        weights,
-                        epsilon,
-                    } => todo!(),
+                    ModelType::LinearRegression { weights, epsilon } => weights,
                 };
                 let predictions = inference(&x, &weights);
                 let mut score = 0;
@@ -573,13 +539,21 @@ enum Library {
 }
 
 fn svd_train_digits(pseudo_inverse: DMatrix<f64>, trn_lbl: &[u8], use_pca: bool) -> Result<()> {
+    let mut all_weights = DMatrix::zeros(pseudo_inverse.nrows(), 10);
     for i in 0..=9 {
         let train_label =
             DVector::from_row_slice(trn_lbl).map(|digit| if digit == i { 1.0 } else { 0.0 });
         let weights = &pseudo_inverse * train_label;
-        let weights = Weights::new(weights.as_slice(), i, use_pca);
-        save_json(weights)?;
+        all_weights.set_column(i as usize, &weights);
     }
+
+    let model_type = ModelType::LinearRegression {
+        weights: all_weights,
+        epsilon: EPSILON,
+    };
+
+    let model = Model::new(785, true, None, model_type);
+    save_weights(model)?;
 
     Ok(())
 }
@@ -612,26 +586,39 @@ fn train_all_digits(
 
                     if use_pca {
                         let qr = qr_nalgebra_lapack_pca(train_data)?;
+                        let mut all_weights = DMatrix::zeros(785, 10);
                         for digit in 0..=9 {
                             println!("Training {digit}");
                             let train_label = prepare_trn_lbl_nalgebra(trn_lbl, digit);
-                            let solution = qr.solve(train_label)?;
-                            let weights = Weights::new(solution.as_slice(), digit, use_pca);
-                            save_json(weights)?;
+                            let weights = qr.solve(train_label)?;
+                            all_weights.set_column(digit as usize, &weights);
                         }
+                        let model_type = ModelType::LinearRegression {
+                            weights: all_weights,
+                            epsilon: EPSILON,
+                        };
+
+                        let model = Model::new(785, true, None, model_type);
+                        save_weights(model)?;
                     } else {
                         let train_data = train_data.insert_column(0, 1.0);
+                        let n_features = train_data.ncols();
                         let (q, rt, p) = qr_nalgebra_lapack(train_data);
+                        let mut all_weights = DMatrix::zeros(n_features, 10);
                         for digit in 0..=9 {
-                            println!("Training {digit}");
                             let train_label = prepare_trn_lbl_nalgebra(trn_lbl, digit);
                             let qtb = &q * train_label;
-                            let solution = rt.solve_upper_triangular(&qtb).unwrap();
-                            let mut solution = solution.resize_vertically(785, 0.0);
-                            p.inv_permute_rows(&mut solution);
-                            let weights = Weights::new(solution.as_slice(), digit, use_pca);
-                            save_json(weights)?;
+                            let weights = rt.solve_upper_triangular(&qtb).unwrap();
+                            let mut weights = weights.resize_vertically(785, 0.0);
+                            p.inv_permute_rows(&mut weights);
+                            all_weights.set_column(digit as usize, &weights);
                         }
+                        let model_type = ModelType::LinearRegression {
+                            weights: all_weights,
+                            epsilon: EPSILON,
+                        };
+                        let model = Model::new(785, true, None, model_type);
+                        save_weights(model)?;
                     }
 
                     println!("QR elapsed: {:?}", start.elapsed());
@@ -640,7 +627,7 @@ fn train_all_digits(
                     let y = one_hot_encode(trn_lbl);
                     let train_data = train_data.insert_column(0, 1.0);
                     let weights = logistic_regression(&train_data, &y);
-                    save_weights_(weights)?;
+                    save_weights(weights)?;
                 }
             }
         }
@@ -775,35 +762,35 @@ fn prepare_train_data_faer(
     Ok((train_data, train_label))
 }
 
-// Saves weights to a new folder with the name structure of "weights_N TRAINING SIZE_EPSILON"
-fn save_json(weights: Weights) -> Result<()> {
-    let path = std::path::Path::new("./weights");
-    std::fs::create_dir_all(path)?;
+// // Saves weights to a new folder with the name structure of "weights_N TRAINING SIZE_EPSILON"
+// fn save_json(weights: Weights) -> Result<()> {
+//     let path = std::path::Path::new("./weights");
+//     std::fs::create_dir_all(path)?;
+//
+//     let weights_folder = format!("weights_{}_{}", N_TRAINING_SET, EPSILON);
+//     let weights_folder = path.join(weights_folder);
+//     std::fs::create_dir_all(&weights_folder)?;
+//
+//     let filename = format!("{}/{} weights.json", weights_folder.display(), {
+//         weights.digit
+//     });
+//     let file = File::create(filename).context("Failed to create file at path")?;
+//     let mut writer = BufWriter::new(file);
+//
+//     serde_json::to_writer_pretty(&mut writer, &weights)
+//         .context("Failed to serialize weights into JSON format")?;
+//
+//     Ok(())
+// }
 
-    let weights_folder = format!("weights_{}_{}", N_TRAINING_SET, EPSILON);
-    let weights_folder = path.join(weights_folder);
-    std::fs::create_dir_all(&weights_folder)?;
-
-    let filename = format!("{}/{} weights.json", weights_folder.display(), {
-        weights.digit
-    });
-    let file = File::create(filename).context("Failed to create file at path")?;
-    let mut writer = BufWriter::new(file);
-
-    serde_json::to_writer_pretty(&mut writer, &weights)
-        .context("Failed to serialize weights into JSON format")?;
-
-    Ok(())
-}
-
-fn open_json(digit: u8, path: &std::path::Path) -> Result<Weights> {
-    let filename = format!("{}/{} weights.json", path.display(), digit);
-    let file = File::open(filename)?;
-    let weights_json = BufReader::new(file);
-    let weights =
-        serde_json::from_reader(weights_json).context("Failed to deserialize weights JSON")?;
-    Ok(weights)
-}
+// fn open_json(digit: u8, path: &std::path::Path) -> Result<Weights> {
+//     let filename = format!("{}/{} weights.json", path.display(), digit);
+//     let file = File::open(filename)?;
+//     let weights_json = BufReader::new(file);
+//     let weights =
+//         serde_json::from_reader(weights_json).context("Failed to deserialize weights JSON")?;
+//     Ok(weights)
+// }
 
 fn open_pca() -> Result<Pca> {
     let filename = "pca/pca.json";
@@ -814,106 +801,106 @@ fn open_pca() -> Result<Pca> {
     Ok(weights)
 }
 
-fn get_weights() -> Result<Vec<Weights>> {
-    let mut weights: Vec<Weights> = vec![];
-    let folder = FileDialog::new()
-        .set_title("Select a folder to open in terminal")
-        .pick_folder();
+// fn get_weights() -> Result<Vec<Weights>> {
+//     let mut weights: Vec<Weights> = vec![];
+//     let folder = FileDialog::new()
+//         .set_title("Select a folder to open in terminal")
+//         .pick_folder();
+//
+//     match folder {
+//         Some(path) => {
+//             for i in 0..=9 {
+//                 let weight = open_json(i, path.as_path())?;
+//                 weights.push(weight);
+//             }
+//         }
+//         None => {
+//             eprintln!("No folder selected.");
+//         }
+//     }
+//
+//     Ok(weights)
+// }
 
-    match folder {
-        Some(path) => {
-            for i in 0..=9 {
-                let weight = open_json(i, path.as_path())?;
-                weights.push(weight);
-            }
-        }
-        None => {
-            eprintln!("No folder selected.");
-        }
-    }
-
-    Ok(weights)
-}
-
-fn digit_inference(tst_img: &[u8], tst_lbl: &[u8], weights: Vec<Weights>) -> Result<()> {
-    let mut test_data = DMatrix::from_row_slice(N_TESTING_SET as usize, 784, tst_img)
-        // .map(|pixel| if pixel as f64 > 0.0 { 1.0 } else { 0.0 });
-        .map(|pixel| pixel as f64 / 255.0);
-
-    let n_train = weights.first().unwrap().n_train.unwrap();
-    let epsilon = weights.first().unwrap().epsilon.unwrap();
-    let is_pca = weights.first().unwrap().pca;
-
-    if is_pca {
-        let mut pca = open_pca()?;
-        test_data = pca_transform(&mut pca, &test_data, PCA_COMPONENTS);
-    }
-
-    test_data = test_data.insert_column(0, 1.0);
-    let mut results: Vec<(u8, u8)> = vec![];
-    let mut metrics: Vec<F1> = (0..10)
-        .map(|digit| F1::new(digit, n_train, epsilon))
-        .collect();
-
-    for (i, row) in test_data.row_iter().enumerate() {
-        let (mut digit, mut max_score) = (0, f64::NEG_INFINITY);
-        for digit_weights in &weights {
-            let weights = DVector::from_row_slice(&digit_weights.weights);
-
-            let score = row.transpose().dot(&weights);
-
-            if score > max_score {
-                max_score = score;
-                digit = digit_weights.digit;
-            }
-        }
-
-        for metric in &mut metrics {
-            if digit == metric.digit && tst_lbl[i] == metric.digit {
-                metric.tpos += 1.0;
-            } else if digit == metric.digit && tst_lbl[i] != metric.digit {
-                metric.fpos += 1.0;
-            } else if digit != metric.digit && tst_lbl[i] == metric.digit {
-                metric.fneg += 1.0;
-            }
-        }
-
-        results.push((tst_lbl[i], digit));
-    }
-
-    for digit in &metrics {
-        println!(
-            "Digit: {}\nPrecision: {}\nRecall: {}\nF1: {}\n",
-            digit.digit,
-            digit.precision(),
-            digit.recall(),
-            digit.f1()
-        );
-    }
-
-    let average_f1 = metrics.iter().fold(0.0, |acc, digit| acc + digit.f1());
-    let average_f1 = average_f1 / metrics.len() as f64;
-
-    let num_correct = results.iter().fold(
-        0,
-        |acc: u32, digits| {
-            if digits.0 == digits.1 { acc + 1 } else { acc }
-        },
-    );
-
-    f1_scatterplot(metrics)?;
-
-    let total_scores = N_TESTING_SET;
-
-    let percent_correct = (num_correct as f32 / N_TESTING_SET as f32) * 100.0;
-
-    println!(
-        "Number of Tests: {}\n Number correct: {}\n Percent Correct: {:.2}%\n Average F1: {}",
-        total_scores, num_correct, percent_correct, average_f1
-    );
-
-    Ok(())
-}
+// fn digit_inference(tst_img: &[u8], tst_lbl: &[u8], weights: Vec<Weights>) -> Result<()> {
+//     let mut test_data = DMatrix::from_row_slice(N_TESTING_SET as usize, 784, tst_img)
+//         // .map(|pixel| if pixel as f64 > 0.0 { 1.0 } else { 0.0 });
+//         .map(|pixel| pixel as f64 / 255.0);
+//
+//     let n_train = weights.first().unwrap().n_train.unwrap();
+//     let epsilon = weights.first().unwrap().epsilon.unwrap();
+//     let is_pca = weights.first().unwrap().pca;
+//
+//     if is_pca {
+//         let mut pca = open_pca()?;
+//         test_data = pca_transform(&mut pca, &test_data, PCA_COMPONENTS);
+//     }
+//
+//     test_data = test_data.insert_column(0, 1.0);
+//     let mut results: Vec<(u8, u8)> = vec![];
+//     let mut metrics: Vec<F1> = (0..10)
+//         .map(|digit| F1::new(digit, n_train, epsilon))
+//         .collect();
+//
+//     for (i, row) in test_data.row_iter().enumerate() {
+//         let (mut digit, mut max_score) = (0, f64::NEG_INFINITY);
+//         for digit_weights in &weights {
+//             let weights = DVector::from_row_slice(&digit_weights.weights);
+//
+//             let score = row.transpose().dot(&weights);
+//
+//             if score > max_score {
+//                 max_score = score;
+//                 digit = digit_weights.digit;
+//             }
+//         }
+//
+//         for metric in &mut metrics {
+//             if digit == metric.digit && tst_lbl[i] == metric.digit {
+//                 metric.tpos += 1.0;
+//             } else if digit == metric.digit && tst_lbl[i] != metric.digit {
+//                 metric.fpos += 1.0;
+//             } else if digit != metric.digit && tst_lbl[i] == metric.digit {
+//                 metric.fneg += 1.0;
+//             }
+//         }
+//
+//         results.push((tst_lbl[i], digit));
+//     }
+//
+//     for digit in &metrics {
+//         println!(
+//             "Digit: {}\nPrecision: {}\nRecall: {}\nF1: {}\n",
+//             digit.digit,
+//             digit.precision(),
+//             digit.recall(),
+//             digit.f1()
+//         );
+//     }
+//
+//     let average_f1 = metrics.iter().fold(0.0, |acc, digit| acc + digit.f1());
+//     let average_f1 = average_f1 / metrics.len() as f64;
+//
+//     let num_correct = results.iter().fold(
+//         0,
+//         |acc: u32, digits| {
+//             if digits.0 == digits.1 { acc + 1 } else { acc }
+//         },
+//     );
+//
+//     f1_scatterplot(metrics)?;
+//
+//     let total_scores = N_TESTING_SET;
+//
+//     let percent_correct = (num_correct as f32 / N_TESTING_SET as f32) * 100.0;
+//
+//     println!(
+//         "Number of Tests: {}\n Number correct: {}\n Percent Correct: {:.2}%\n Average F1: {}",
+//         total_scores, num_correct, percent_correct, average_f1
+//     );
+//
+//     Ok(())
+// }
 
 // Creates a scatterplot where
 // - precision of digit is the x-axis
