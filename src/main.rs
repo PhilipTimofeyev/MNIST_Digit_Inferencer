@@ -4,8 +4,7 @@ use faer::linalg::triangular_solve::solve_upper_triangular_in_place;
 use faer::{Col, Mat, MatRef, Par};
 use mnist::*;
 use nalgebra::{DMatrix, DVector, SymmetricEigen};
-use nalgebra_lapack::colpiv_qr::Permutation;
-use nalgebra_lapack::{QR, QrDecomposition, SVD, colpiv_qr};
+use nalgebra_lapack::QrDecomposition;
 use plotters::prelude::*;
 use rfd::FileDialog;
 use serde::{Deserialize, Serialize};
@@ -14,9 +13,11 @@ use std::io::{BufReader, BufWriter};
 use std::time::Instant;
 
 const EPSILON: f64 = 1e-8;
-const N_TRAINING_SET: u32 = 9999;
-const N_TESTING_SET: u32 = 10000;
+const N_TRAINING_SET: u32 = 60000;
+const N_TESTING_SET: u32 = 10;
 const PCA_COMPONENTS: usize = 30;
+const EPOCHS: u32 = 200;
+const ALPHA: f64 = 0.01; // Learning Rate
 
 fn main() -> Result<()> {
     let Mnist {
@@ -35,6 +36,81 @@ fn main() -> Result<()> {
     select_train_or_infer(&trn_img, &trn_lbl, &tst_img, &tst_lbl)?;
 
     Ok(())
+}
+
+// Convert logits to probabilities
+fn softmax(logits: &DMatrix<f64>) -> DMatrix<f64> {
+    let mut p = DMatrix::zeros(logits.nrows(), logits.ncols());
+
+    for i in 0..logits.nrows() {
+        let row = logits.row(i);
+
+        let max_val = row.max();
+        let stable_row = row.map(|val| (val - max_val).exp());
+
+        let sum: f64 = stable_row.sum();
+
+        // 3. Divide by the sum to get probabilities
+        p.set_row(i, &(stable_row / sum));
+    }
+
+    p
+}
+
+// x is input matrix, y is the one hot matrix
+// epoch is one round of learning
+fn logistic_regression(x: &DMatrix<f64>, y: &DMatrix<f64>) {
+    let mut weights = DMatrix::zeros(x.ncols(), 10);
+    for epoch in 0..EPOCHS {
+        let logits = x * &weights;
+        let p = softmax(&logits);
+        let error = &p - y;
+        let gradient = x.transpose() * error / x.nrows() as f64;
+        weights -= gradient * ALPHA;
+    }
+
+    // Convert to 2-D vector for serialization
+    let mut result = Vec::with_capacity(weights.nrows());
+    for i in 0..weights.nrows() {
+        let mut row = Vec::with_capacity(weights.ncols());
+        for j in 0..weights.ncols() {
+            row.push(weights[(i, j)]);
+        }
+        result.push(row);
+    }
+
+    let file = File::create("logistic.json").expect("Failed to create file");
+    serde_json::to_writer_pretty(file, &result);
+}
+
+fn inference(x: &DMatrix<f64>, w: &DMatrix<f64>) -> DVector<usize> {
+    let scores = x * w;
+
+    // Prepare an empty vector to store the predicted digits
+    let mut predictions = DVector::zeros(scores.nrows());
+
+    // Figure out which value has the highest probability in each row.
+    // Each row has 10 probabilities representing each digit
+    for (index, row) in scores.row_iter().enumerate() {
+        let (best_digit_index, _best_digit) = row.transpose().argmax();
+        predictions[index] = best_digit_index;
+    }
+
+    predictions
+}
+
+// Converts the digits into one-hot encoding
+// the digit is represented as a row of binary numbers, where 1 and its index in the row indicates
+// the digit, ie, 0 0 1 0 0 0 0 0 0 0 is the digit 2
+fn one_hot_encode(trn_labels: &[u8]) -> DMatrix<f64> {
+    let num_samples = trn_labels.len();
+    let mut one_hot = DMatrix::zeros(num_samples, 10);
+
+    for (lbl_idx, &label) in trn_labels.iter().enumerate() {
+        one_hot[(lbl_idx, label as usize)] = 1.0;
+    }
+
+    one_hot
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -336,6 +412,7 @@ fn select_train_or_infer(
             "Train Single Digit",
             "Train All Digits",
             "Inference",
+            "Inference Logistic",
             "Build PCA",
             "Exit",
         ];
@@ -361,6 +438,24 @@ fn select_train_or_infer(
                 digit_inference(tst_img, tst_lbl, weights)?
             }
             3 => {
+                let x = DMatrix::from_row_slice(N_TESTING_SET as usize, 784, tst_img)
+                    .map(|pixel| pixel as f64 / 255.0);
+                let x = x.insert_column(0, 1.0);
+
+                let file = File::open("logistic.json")?;
+                let weights: Vec<Vec<f64>> = serde_json::from_reader(file)?;
+                let weights = DMatrix::from_fn(785, 10, |i, j| weights[i][j]);
+                let predictions = inference(&x, &weights);
+                let mut score = 0;
+                for i in 0..N_TESTING_SET as usize {
+                    if tst_lbl[i] == predictions[i] as u8 {
+                        score += 1
+                    };
+                }
+
+                println!("Score: {} ", score as f64 / N_TESTING_SET as f64);
+            }
+            4 => {
                 let pca = fit_pca(trn_img);
                 save_pca(pca)?;
             }
@@ -374,6 +469,7 @@ fn select_train_or_infer(
 enum Method {
     SVD,
     QR,
+    Logistic,
 }
 
 enum Library {
@@ -445,6 +541,12 @@ fn train_all_digits(
 
                     println!("QR elapsed: {:?}", start.elapsed());
                 }
+                Method::Logistic => {
+                    let y = one_hot_encode(trn_lbl);
+                    let train_data = train_data.insert_column(0, 1.0);
+                    let weights = logistic_regression(&train_data, &y);
+                    // save_json(weights)?;
+                }
             }
         }
         Library::Faer => match method {
@@ -458,6 +560,9 @@ fn train_all_digits(
                 todo!();
                 // let (train_data, train_label) = prepare_train_data_faer(trn_img, trn_lbl, i)?;
                 // qr_least_squares_faer(train_data, train_label, i)
+            }
+            Method::Logistic => {
+                todo!()
             }
         },
     };
@@ -531,7 +636,7 @@ fn select_training_library() -> Result<Library> {
 }
 
 fn select_training_method() -> Result<Method> {
-    let items = vec!["SVD", "QR"];
+    let items = vec!["SVD", "QR", "Logistic"];
     let selection = FuzzySelect::new()
         .with_prompt("Select and option:")
         .items(&items)
@@ -540,6 +645,7 @@ fn select_training_method() -> Result<Method> {
     match selection {
         0 => Ok(Method::SVD),
         1 => Ok(Method::QR),
+        2 => Ok(Method::Logistic),
         _ => todo!(),
     }
 }
