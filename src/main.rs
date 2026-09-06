@@ -13,11 +13,11 @@ use std::io::{BufReader, BufWriter};
 use std::time::Instant;
 
 const EPSILON: f64 = 1e-8;
-const N_TRAINING_SET: u32 = 60000;
+const N_TRAINING_SET: u32 = 1000;
 const N_TESTING_SET: u32 = 10;
 const PCA_COMPONENTS: usize = 30;
-const EPOCHS: u32 = 200;
-const ALPHA: f64 = 0.01; // Learning Rate
+const EPOCHS: usize = 20;
+const ALPHA: f64 = 1.0; // Learning Rate
 
 fn main() -> Result<()> {
     let Mnist {
@@ -36,6 +36,42 @@ fn main() -> Result<()> {
     select_train_or_infer(&trn_img, &trn_lbl, &tst_img, &tst_lbl)?;
 
     Ok(())
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct Model {
+    n_train: u32,
+    n_features: usize,
+    bias: bool,
+    pca: Option<Pca>,
+    model: ModelType,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+enum ModelType {
+    LinearRegression {
+        digit: u8,
+        weights: DVector<f64>,
+        epsilon: Option<f64>,
+    },
+
+    LogisticRegression {
+        weights: DMatrix<f64>,
+        learning_rate: f64,
+        epochs: usize,
+    },
+}
+
+impl Model {
+    fn new(n_features: usize, bias: bool, pca: Option<Pca>, model: ModelType) -> Model {
+        Model {
+            n_train: N_TRAINING_SET,
+            n_features,
+            bias,
+            pca,
+            model,
+        }
+    }
 }
 
 // Convert logits to probabilities
@@ -59,7 +95,7 @@ fn softmax(logits: &DMatrix<f64>) -> DMatrix<f64> {
 
 // x is input matrix, y is the one hot matrix
 // epoch is one round of learning
-fn logistic_regression(x: &DMatrix<f64>, y: &DMatrix<f64>) {
+fn logistic_regression(x: &DMatrix<f64>, y: &DMatrix<f64>) -> Model {
     let mut weights = DMatrix::zeros(x.ncols(), 10);
     for epoch in 0..EPOCHS {
         let logits = x * &weights;
@@ -69,18 +105,65 @@ fn logistic_regression(x: &DMatrix<f64>, y: &DMatrix<f64>) {
         weights -= gradient * ALPHA;
     }
 
-    // Convert to 2-D vector for serialization
-    let mut result = Vec::with_capacity(weights.nrows());
-    for i in 0..weights.nrows() {
-        let mut row = Vec::with_capacity(weights.ncols());
-        for j in 0..weights.ncols() {
-            row.push(weights[(i, j)]);
-        }
-        result.push(row);
-    }
+    let model_type = ModelType::LogisticRegression {
+        weights,
+        learning_rate: ALPHA,
+        epochs: EPOCHS,
+    };
 
-    let file = File::create("logistic.json").expect("Failed to create file");
-    serde_json::to_writer_pretty(file, &result);
+    Model::new(x.ncols(), true, None, model_type)
+}
+
+// Saves weights to a new folder with the name structure of "weights_N TRAINING SIZE_EPSILON"
+fn save_weights_(weights: Model) -> Result<()> {
+    let path = std::path::Path::new("./weights");
+    std::fs::create_dir_all(path)?;
+
+    let filename = match &weights.model {
+        ModelType::LinearRegression {
+            digit,
+            weights,
+            epsilon,
+        } => {
+            let folder = String::from("linear_regression");
+            std::fs::create_dir_all(format!("weights/{}", folder))?;
+            format!("weights/{}/test_linear", folder)
+        }
+        ModelType::LogisticRegression {
+            weights,
+            learning_rate,
+            epochs,
+        } => {
+            let folder = String::from("logistic_regression");
+            std::fs::create_dir_all(format!("weights/{}", folder))?;
+            format!("weights/{}/test_logistic", folder)
+        }
+    };
+
+    let file = File::create(filename).context("Failed to create file at path")?;
+    let mut writer = BufWriter::new(file);
+
+    serde_json::to_writer_pretty(&mut writer, &weights)
+        .context("Failed to serialize weights into JSON format")?;
+
+    Ok(())
+}
+
+fn get_weights_() -> Result<Model> {
+    let folder = FileDialog::new()
+        .set_title("Select the weights")
+        .pick_file();
+
+    match folder {
+        Some(path) => {
+            let file = File::open(path)?;
+            let weights_json = BufReader::new(file);
+            let weights: Model = serde_json::from_reader(weights_json)
+                .context("Failed to deserialize weights JSON")?;
+            Ok(weights)
+        }
+        None => Err(anyhow::anyhow!("No file selected")),
+    }
 }
 
 fn inference(x: &DMatrix<f64>, w: &DMatrix<f64>) -> DVector<usize> {
@@ -442,9 +525,21 @@ fn select_train_or_infer(
                     .map(|pixel| pixel as f64 / 255.0);
                 let x = x.insert_column(0, 1.0);
 
-                let file = File::open("logistic.json")?;
-                let weights: Vec<Vec<f64>> = serde_json::from_reader(file)?;
-                let weights = DMatrix::from_fn(785, 10, |i, j| weights[i][j]);
+                let weights = get_weights_()?;
+                // let file = File::open("logistic.json")?;
+                // let weights: Vec<Vec<f64>> = serde_json::from_reader(file)?;
+                let weights = match weights.model {
+                    ModelType::LogisticRegression {
+                        weights,
+                        learning_rate: _,
+                        epochs: _,
+                    } => weights,
+                    ModelType::LinearRegression {
+                        digit,
+                        weights,
+                        epsilon,
+                    } => todo!(),
+                };
                 let predictions = inference(&x, &weights);
                 let mut score = 0;
                 for i in 0..N_TESTING_SET as usize {
@@ -545,7 +640,7 @@ fn train_all_digits(
                     let y = one_hot_encode(trn_lbl);
                     let train_data = train_data.insert_column(0, 1.0);
                     let weights = logistic_regression(&train_data, &y);
-                    // save_json(weights)?;
+                    save_weights_(weights)?;
                 }
             }
         }
