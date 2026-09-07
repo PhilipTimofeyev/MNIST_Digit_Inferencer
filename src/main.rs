@@ -1,3 +1,9 @@
+use crate::solvers::{qr, svd};
+mod models;
+use crate::models::logistic_regression;
+mod preprocessing;
+use crate::preprocessing::pca;
+mod solvers;
 use anyhow::{Context, Result};
 use dialoguer::{Confirm, FuzzySelect};
 use faer::linalg::triangular_solve::solve_upper_triangular_in_place;
@@ -71,60 +77,21 @@ impl Model {
     }
 }
 
-// Convert logits to probabilities
-fn softmax(logits: &DMatrix<f64>) -> DMatrix<f64> {
-    let mut p = DMatrix::zeros(logits.nrows(), logits.ncols());
+fn get_weights() -> Result<Model> {
+    let folder = FileDialog::new()
+        .set_title("Select the weights")
+        .pick_file();
 
-    for i in 0..logits.nrows() {
-        let row = logits.row(i);
-
-        let max_val = row.max();
-        let stable_row = row.map(|val| (val - max_val).exp());
-
-        let sum: f64 = stable_row.sum();
-
-        // 3. Divide by the sum to get probabilities
-        p.set_row(i, &(stable_row / sum));
-    }
-
-    p
-}
-
-fn cross_entropy_loss(p: &DMatrix<f64>, y: &DMatrix<f64>) -> f64 {
-    let mut loss = 0.0;
-
-    for i in 0..p.nrows() {
-        for j in 0..p.ncols() {
-            if y[(i, j)] > 0.0 {
-                loss -= y[(i, j)] * p[(i, j)].ln();
-            }
+    match folder {
+        Some(path) => {
+            let file = File::open(path)?;
+            let weights_json = BufReader::new(file);
+            let weights: Model = serde_json::from_reader(weights_json)
+                .context("Failed to deserialize weights JSON")?;
+            Ok(weights)
         }
+        None => Err(anyhow::anyhow!("No file selected")),
     }
-
-    loss / p.nrows() as f64
-}
-
-// x is input matrix, y is the one hot matrix
-// epoch is one round of learning
-fn logistic_regression(x: &DMatrix<f64>, y: &DMatrix<f64>) -> Model {
-    let mut weights = DMatrix::zeros(x.ncols(), 10);
-    for epoch in 1..=EPOCHS {
-        let logits = x * &weights;
-        let p = softmax(&logits);
-        let loss = cross_entropy_loss(&p, y);
-        println!("epoch: {epoch} | loss: {loss}");
-        let error = &p - y;
-        let gradient = x.transpose() * error / x.nrows() as f64;
-        weights -= gradient * ALPHA;
-    }
-
-    let model_type = ModelType::LogisticRegression {
-        weights,
-        learning_rate: ALPHA,
-        epochs: EPOCHS,
-    };
-
-    Model::new(x.ncols(), None, model_type)
 }
 
 // Saves weights to a new folder based on model
@@ -173,23 +140,6 @@ fn save_weights(model: Model) -> Result<()> {
     Ok(())
 }
 
-fn get_weights() -> Result<Model> {
-    let folder = FileDialog::new()
-        .set_title("Select the weights")
-        .pick_file();
-
-    match folder {
-        Some(path) => {
-            let file = File::open(path)?;
-            let weights_json = BufReader::new(file);
-            let weights: Model = serde_json::from_reader(weights_json)
-                .context("Failed to deserialize weights JSON")?;
-            Ok(weights)
-        }
-        None => Err(anyhow::anyhow!("No file selected")),
-    }
-}
-
 fn inference(x: &DMatrix<f64>, w: &DMatrix<f64>) -> DVector<usize> {
     let scores = x * w;
 
@@ -204,247 +154,6 @@ fn inference(x: &DMatrix<f64>, w: &DMatrix<f64>) -> DVector<usize> {
     }
 
     predictions
-}
-
-// Converts the digits into one-hot encoding
-// the digit is represented as a row of binary numbers, where 1 and its index in the row indicates
-// the digit, ie, 0 0 1 0 0 0 0 0 0 0 is the digit 2
-fn one_hot_encode(trn_labels: &[u8]) -> DMatrix<f64> {
-    let num_samples = trn_labels.len();
-    let mut one_hot = DMatrix::zeros(num_samples, 10);
-
-    for (lbl_idx, &label) in trn_labels.iter().enumerate() {
-        one_hot[(lbl_idx, label as usize)] = 1.0;
-    }
-
-    one_hot
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-struct Pca {
-    mean: DVector<f64>,
-    components: DMatrix<f64>,
-}
-
-fn save_pca(pca: Pca) -> Result<()> {
-    let path = std::path::Path::new("./pca");
-    std::fs::create_dir_all(path)?;
-
-    let filename = "pca/pca.json";
-    let file = File::create(filename).context("Failed to create file at path")?;
-    let mut writer = BufWriter::new(file);
-
-    serde_json::to_writer_pretty(&mut writer, &pca)
-        .context("Failed to serialize PCA into JSON format")?;
-
-    Ok(())
-}
-
-impl Pca {
-    fn k_components(&mut self, k: usize) -> Pca {
-        self.components = self.components.columns(0, k).into_owned();
-        self.to_owned()
-    }
-}
-
-fn fit_pca(trn_img: &[u8]) -> Pca {
-    let matrix = DMatrix::from_row_slice(60000, 784, trn_img).map(|pixel| pixel as f64 / 255.0);
-    let m = matrix.nrows();
-    let n = matrix.ncols();
-
-    // Calculate column means
-    let mut means = vec![0.0; n];
-
-    for j in 0..n {
-        let mut sum = 0.0;
-
-        for i in 0..m {
-            sum += matrix[(i, j)];
-        }
-
-        means[j] = sum / m as f64;
-    }
-
-    // Center the data using the means
-    let centered = DMatrix::from_fn(m, n, |i, j| matrix[(i, j)] - means[j]);
-
-    // make sure not to divide by 0
-    let denominater = if m > 1 { (m - 1) as f64 } else { 1.0 };
-    // Build covariance matrix which represents how feature change together
-    // The diagonal represents the variance of each specific feature
-    let covariance_matrix = (&centered.transpose() * &centered) / denominater;
-
-    // Get the eigendecomposition, eigenvectors represent the directions of maximum variance
-    // The eigenvalues represent the amount of variance in an eigenvector
-    let eigen = SymmetricEigen::new(covariance_matrix);
-
-    let mut eigenpairs: Vec<(f64, DVector<f64>)> = (0..n)
-        .map(|i| {
-            (
-                eigen.eigenvalues[i],
-                eigen.eigenvectors.column(i).into_owned(),
-            )
-        })
-        .collect();
-
-    // Sort by eigenvalue, largest first to denote which direction has the most
-    // variance/significance
-    eigenpairs.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
-
-    // Sets the number of components
-    let k = 784;
-
-    let components = DMatrix::from_columns(
-        &eigenpairs[..k]
-            .iter()
-            .map(|(_, v)| v.clone())
-            .collect::<Vec<_>>(),
-    );
-
-    Pca {
-        mean: DVector::from_vec(means),
-        components,
-    }
-}
-
-fn pca_transform(pca: &mut Pca, matrix: &DMatrix<f64>, k_components: usize) -> DMatrix<f64> {
-    let matrix = matrix.clone_owned();
-    let centered = DMatrix::from_fn(matrix.nrows(), matrix.ncols(), |i, j| {
-        matrix[(i, j)] - pca.mean[j]
-    });
-
-    let pca = pca.k_components(k_components);
-
-    centered * &pca.components
-}
-
-// Tolerance (Epsilon) is set internally by Faer
-// fn svd_least_squares_faer(matrix: Mat<f64>, vector: Col<f64>, digit: u8) -> Weights {
-//     let svd = matrix.thin_svd().unwrap();
-//
-//     let pseudo_inverse = svd.pseudoinverse();
-//     let solution = pseudo_inverse * vector;
-//     let solution: Vec<f64> = solution.iter().copied().collect();
-//
-//     Weights::new(solution.as_slice(), digit, false)
-// }
-
-// fn qr_least_squares_faer(matrix: Mat<f64>, vector: Col<f64>, digit: u8) -> Weights {
-//     let qr = matrix.col_piv_qr();
-//     let q = qr.compute_thin_Q();
-//     let rt = qr.R().to_owned();
-//
-//     let rank = (0..rt.nrows().min(rt.ncols()))
-//         .take_while(|&i| rt[(i, i)].abs() > EPSILON)
-//         .count();
-//
-//     println!("Rank: {rank}");
-//
-//     // Q^T * b
-//     let qtb = q.transpose() * vector;
-//
-//     let (qtb_truncated, _discard) = qtb.split_at_row(rank);
-//     let mut qtb_truncated = qtb_truncated.to_owned();
-//
-//     // R (upper right triangle matrix)
-//     let rt = rt.submatrix(0, 0, rank, rank);
-//
-//     solve_upper_triangular_in_place(rt, qtb_truncated.as_mat_mut(), Par::rayon(0));
-//     // solve_upper_triangular_in_place(rt, qtb_truncated.as_mat_mut(), Par::Seq);
-//
-//     let mut permutated_y = qtb_truncated;
-//     permutated_y.resize_with(matrix.ncols(), |_| 0.0);
-//
-//     let p = qr.P();
-//
-//     let (forward_idx, _inverse_idx) = p.arrays();
-//
-//     let mut x = Mat::<f64>::zeros(permutated_y.nrows(), 1);
-//
-//     for (i, &orig_col) in forward_idx.iter().enumerate() {
-//         x[(orig_col, 0)] = permutated_y[i];
-//     }
-//
-//     Weights::new(x.col_as_slice(0), digit, false)
-// }
-
-// Builds the pseudoinverse using SVD
-fn svd_nalgebra_lapack(matrix: DMatrix<f64>) -> Result<DMatrix<f64>> {
-    let matrix = matrix.insert_column(0, 1.0);
-
-    let svd = nalgebra_lapack::SVD::new(matrix).unwrap();
-
-    let rank = svd.rank(EPSILON);
-
-    println!("Matrix Rank: {rank}");
-
-    let ut = svd.u.transpose();
-
-    // Trim U^T
-    let mut sigma_inv_ut = ut.rows(0, rank).into_owned();
-
-    // Multiply U^T by the inverted singular values to give E^-1 * U^T
-    for i in 0..rank {
-        let inv_sigma = 1.0 / svd.singular_values[i];
-
-        for j in 0..sigma_inv_ut.ncols() {
-            sigma_inv_ut[(i, j)] *= inv_sigma;
-        }
-    }
-
-    // Trim V^T
-    let vt = svd.vt.rows(0, rank).transpose();
-
-    // Create pseudo inverse by multiplying V^T*E^-1*U^T
-    let pseudoinverse = vt * sigma_inv_ut;
-
-    Ok(pseudoinverse)
-}
-
-fn svd_nalgebra_lapack_pca(matrix: DMatrix<f64>) -> Result<DMatrix<f64>> {
-    let mut pca = open_pca()?;
-    let transformed_matrix = pca_transform(&mut pca, &matrix, PCA_COMPONENTS);
-    let transformed_matrix = transformed_matrix.insert_column(0, 1.0);
-    let pseudo_inverse = transformed_matrix.pseudo_inverse(EPSILON).unwrap();
-    let rank = pseudo_inverse.rank(EPSILON);
-    println!("Matrix Rank: {rank}");
-
-    Ok(pseudo_inverse)
-}
-
-// Returns the factorized A matrix as QR
-fn qr_nalgebra_lapack_pca(
-    matrix: DMatrix<f64>,
-) -> Result<nalgebra_lapack::QR<f64, nalgebra::Dyn, nalgebra::Dyn>> {
-    let mut pca = open_pca()?;
-    let transformed_matrix = pca_transform(&mut pca, &matrix, PCA_COMPONENTS);
-    let transformed_matrix = transformed_matrix.insert_column(0, 1.0);
-    let qr = nalgebra_lapack::QR::new(transformed_matrix)?;
-    Ok(qr)
-}
-
-// QR nAlgebra with Column Pivoting
-// Returns a tuple containing a trimmed version of Q and R matrices
-fn qr_nalgebra_lapack(
-    x: DMatrix<f64>,
-) -> (
-    DMatrix<f64>,
-    DMatrix<f64>,
-    nalgebra::PermutationSequence<nalgebra::Dyn>,
-) {
-    let qr = x.col_piv_qr();
-
-    let (q, rt, p) = qr.unpack();
-    let qt = q.transpose();
-
-    let rank = (0..rt.nrows().min(rt.ncols()))
-        .take_while(|&i| rt[(i, i)].abs() > EPSILON)
-        .count();
-
-    let qt_trimmed = qt.rows(0, rank).into_owned();
-    let rt_trimmed = rt.view((0, 0), (rank, rank)).into_owned();
-
-    (qt_trimmed, rt_trimmed, p)
 }
 
 #[derive(Debug)]
@@ -507,8 +216,8 @@ fn select_train_or_infer(
                 digit_inference(tst_img, tst_lbl, model)?;
             }
             2 => {
-                let pca = fit_pca(trn_img);
-                save_pca(pca)?;
+                let pca = pca::fit_pca(trn_img);
+                preprocessing::pca::save_pca(pca)?;
             }
             _ => break,
         }
@@ -565,9 +274,9 @@ fn train_all_digits(
                     let start = Instant::now();
 
                     let pseudo_inverse = if use_pca {
-                        svd_nalgebra_lapack_pca(train_data)?
+                        svd::svd_nalgebra_lapack_pca(train_data)?
                     } else {
-                        svd_nalgebra_lapack(train_data)?
+                        svd::svd_nalgebra_lapack(train_data)?
                     };
 
                     svd_train_digits(pseudo_inverse, trn_lbl, use_pca)?;
@@ -577,7 +286,7 @@ fn train_all_digits(
                     let start = Instant::now();
 
                     if use_pca {
-                        let qr = qr_nalgebra_lapack_pca(train_data)?;
+                        let qr = qr::qr_nalgebra_lapack_pca(train_data)?;
                         let mut all_weights = DMatrix::zeros(qr.ncols(), 10);
                         for digit in 0..=9 {
                             println!("Training {digit}");
@@ -595,7 +304,7 @@ fn train_all_digits(
                     } else {
                         let train_data = train_data.insert_column(0, 1.0);
                         let n_features = train_data.ncols();
-                        let (q, rt, p) = qr_nalgebra_lapack(train_data);
+                        let (q, rt, p) = qr::qr_nalgebra_lapack(train_data);
                         let mut all_weights = DMatrix::zeros(n_features, 10);
                         for digit in 0..=9 {
                             let train_label = prepare_trn_lbl_nalgebra(trn_lbl, digit);
@@ -617,9 +326,9 @@ fn train_all_digits(
                     println!("QR elapsed: {:?}", start.elapsed());
                 }
                 Method::Logistic => {
-                    let y = one_hot_encode(trn_lbl);
+                    let y = logistic_regression::one_hot_encode(trn_lbl);
                     let train_data = train_data.insert_column(0, 1.0);
-                    let weights = logistic_regression(&train_data, &y);
+                    let weights = logistic_regression::logistic_regression(&train_data, &y);
                     save_weights(weights)?;
                 }
             }
@@ -712,15 +421,6 @@ fn prepare_train_data_faer(
     Ok((train_data, train_label))
 }
 
-fn open_pca() -> Result<Pca> {
-    let filename = "pca/pca.json";
-    let file = File::open(filename)?;
-    let weights_json = BufReader::new(file);
-    let weights =
-        serde_json::from_reader(weights_json).context("Failed to deserialize weights JSON")?;
-    Ok(weights)
-}
-
 fn digit_inference(tst_img: &[u8], tst_lbl: &[u8], model: Model) -> Result<()> {
     let weights = match model.model {
         ModelType::LogisticRegression {
@@ -739,8 +439,8 @@ fn digit_inference(tst_img: &[u8], tst_lbl: &[u8], model: Model) -> Result<()> {
         .map(|pixel| pixel as f64 / 255.0);
 
     if let Some(n_components) = model.pca {
-        let mut pca = open_pca()?;
-        test_data = pca_transform(&mut pca, &test_data, n_components);
+        let mut pca = pca::open_pca()?;
+        test_data = pca::pca_transform(&mut pca, &test_data, n_components);
     }
 
     test_data = test_data.insert_column(0, 1.0);
