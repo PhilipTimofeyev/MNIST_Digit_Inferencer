@@ -42,7 +42,6 @@ fn main() -> Result<()> {
 struct Model {
     n_train: u32,
     n_features: usize,
-    bias: bool,
     pca: Option<usize>,
     model: ModelType,
 }
@@ -62,11 +61,10 @@ enum ModelType {
 }
 
 impl Model {
-    fn new(n_features: usize, bias: bool, pca: Option<usize>, model: ModelType) -> Model {
+    fn new(n_features: usize, pca: Option<usize>, model: ModelType) -> Model {
         Model {
             n_train: N_TRAINING_SET,
             n_features,
-            bias,
             pca,
             model,
         }
@@ -126,7 +124,7 @@ fn logistic_regression(x: &DMatrix<f64>, y: &DMatrix<f64>) -> Model {
         epochs: EPOCHS,
     };
 
-    Model::new(x.ncols(), true, None, model_type)
+    Model::new(x.ncols(), None, model_type)
 }
 
 // Saves weights to a new folder based on model
@@ -141,7 +139,10 @@ fn save_weights(model: Model) -> Result<()> {
     };
 
     let filename = match &model.model {
-        ModelType::LinearRegression { weights, epsilon } => {
+        ModelType::LinearRegression {
+            weights: _,
+            epsilon,
+        } => {
             let folder = String::from("linear_regression");
             std::fs::create_dir_all(format!("weights/{}", folder))?;
             format!(
@@ -543,7 +544,7 @@ fn svd_train_digits(pseudo_inverse: DMatrix<f64>, trn_lbl: &[u8], pca: bool) -> 
 
     let pca = if pca { Some(PCA_COMPONENTS) } else { None };
 
-    let model = Model::new(785, true, pca, model_type);
+    let model = Model::new(pseudo_inverse.nrows(), pca, model_type);
     save_weights(model)?;
 
     Ok(())
@@ -589,7 +590,7 @@ fn train_all_digits(
                             epsilon: EPSILON,
                         };
 
-                        let model = Model::new(785, true, Some(PCA_COMPONENTS), model_type);
+                        let model = Model::new(qr.nrows(), Some(PCA_COMPONENTS), model_type);
                         save_weights(model)?;
                     } else {
                         let train_data = train_data.insert_column(0, 1.0);
@@ -600,7 +601,7 @@ fn train_all_digits(
                             let train_label = prepare_trn_lbl_nalgebra(trn_lbl, digit);
                             let qtb = &q * train_label;
                             let weights = rt.solve_upper_triangular(&qtb).unwrap();
-                            let mut weights = weights.resize_vertically(785, 0.0);
+                            let mut weights = weights.resize_vertically(n_features, 0.0);
                             p.inv_permute_rows(&mut weights);
                             all_weights.set_column(digit as usize, &weights);
                         }
@@ -608,7 +609,8 @@ fn train_all_digits(
                             weights: all_weights,
                             epsilon: EPSILON,
                         };
-                        let model = Model::new(785, true, None, model_type);
+
+                        let model = Model::new(n_features, None, model_type);
                         save_weights(model)?;
                     }
 
