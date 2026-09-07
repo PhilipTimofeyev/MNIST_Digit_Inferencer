@@ -43,7 +43,7 @@ struct Model {
     n_train: u32,
     n_features: usize,
     bias: bool,
-    pca: Option<Pca>,
+    pca: Option<usize>,
     model: ModelType,
 }
 
@@ -62,7 +62,7 @@ enum ModelType {
 }
 
 impl Model {
-    fn new(n_features: usize, bias: bool, pca: Option<Pca>, model: ModelType) -> Model {
+    fn new(n_features: usize, bias: bool, pca: Option<usize>, model: ModelType) -> Model {
         Model {
             n_train: N_TRAINING_SET,
             n_features,
@@ -502,20 +502,20 @@ fn select_train_or_infer(
                 train_all_digits(trn_img, trn_lbl, library, method, use_pca)?;
             }
             1 => {
-                let weights = get_weights()?;
+                let model = get_weights()?;
 
                 // let file = File::open("logistic.json")?;
                 // let weights: Vec<Vec<f64>> = serde_json::from_reader(file)?;
-                let weights = match weights.model {
-                    ModelType::LogisticRegression {
-                        weights,
-                        learning_rate: _,
-                        epochs: _,
-                    } => weights,
-                    ModelType::LinearRegression { weights, epsilon } => weights,
-                };
+                // let weights = match weights.model {
+                //     ModelType::LogisticRegression {
+                //         weights,
+                //         learning_rate: _,
+                //         epochs: _,
+                //     } => weights,
+                //     ModelType::LinearRegression { weights, epsilon } => weights,
+                // };
 
-                digit_inference(tst_img, tst_lbl, weights)?;
+                digit_inference(tst_img, tst_lbl, model)?;
             }
             2 => {
                 let pca = fit_pca(trn_img);
@@ -539,7 +539,7 @@ enum Library {
     Faer,
 }
 
-fn svd_train_digits(pseudo_inverse: DMatrix<f64>, trn_lbl: &[u8], use_pca: bool) -> Result<()> {
+fn svd_train_digits(pseudo_inverse: DMatrix<f64>, trn_lbl: &[u8], pca: bool) -> Result<()> {
     let mut all_weights = DMatrix::zeros(pseudo_inverse.nrows(), 10);
     for i in 0..=9 {
         let train_label =
@@ -553,7 +553,9 @@ fn svd_train_digits(pseudo_inverse: DMatrix<f64>, trn_lbl: &[u8], use_pca: bool)
         epsilon: EPSILON,
     };
 
-    let model = Model::new(785, true, None, model_type);
+    let pca = if pca { Some(PCA_COMPONENTS) } else { None };
+
+    let model = Model::new(785, true, pca, model_type);
     save_weights(model)?;
 
     Ok(())
@@ -599,7 +601,7 @@ fn train_all_digits(
                             epsilon: EPSILON,
                         };
 
-                        let model = Model::new(785, true, None, model_type);
+                        let model = Model::new(785, true, Some(PCA_COMPONENTS), model_type);
                         save_weights(model)?;
                     } else {
                         let train_data = train_data.insert_column(0, 1.0);
@@ -729,19 +731,27 @@ fn open_pca() -> Result<Pca> {
     Ok(weights)
 }
 
-fn digit_inference(tst_img: &[u8], tst_lbl: &[u8], weights: DMatrix<f64>) -> Result<()> {
+fn digit_inference(tst_img: &[u8], tst_lbl: &[u8], model: Model) -> Result<()> {
+    let weights = match model.model {
+        ModelType::LogisticRegression {
+            weights,
+            learning_rate: _,
+            epochs: _,
+        } => weights,
+        ModelType::LinearRegression {
+            weights,
+            epsilon: _,
+        } => weights,
+    };
+
     let mut test_data = DMatrix::from_row_slice(N_TESTING_SET as usize, 784, tst_img)
         // .map(|pixel| if pixel as f64 > 0.0 { 1.0 } else { 0.0 });
         .map(|pixel| pixel as f64 / 255.0);
 
-    // let n_train = weights.first().unwrap().n_train.unwrap();
-    // let epsilon = weights.first().unwrap().epsilon.unwrap();
-    // let is_pca = weights.first().unwrap().pca;
-
-    // if is_pca {
-    //     let mut pca = open_pca()?;
-    //     test_data = pca_transform(&mut pca, &test_data, PCA_COMPONENTS);
-    // }
+    if let Some(n_components) = model.pca {
+        let mut pca = open_pca()?;
+        test_data = pca_transform(&mut pca, &test_data, n_components);
+    }
 
     test_data = test_data.insert_column(0, 1.0);
     let mut metrics: Vec<F1> = (0..10)
