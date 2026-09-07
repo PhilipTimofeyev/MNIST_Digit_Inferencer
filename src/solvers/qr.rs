@@ -1,42 +1,86 @@
-use super::super::preprocessing::pca;
+use super::super::prepare_trn_lbl_nalgebra;
 use crate::EPSILON;
-use crate::PCA_COMPONENTS;
 use anyhow::Result;
 use nalgebra::DMatrix;
+use nalgebra_lapack::QrDecomposition;
 
-// Returns the factorized A matrix as QR
-pub fn qr_nalgebra_lapack_pca(
-    matrix: DMatrix<f64>,
-) -> Result<nalgebra_lapack::QR<f64, nalgebra::Dyn, nalgebra::Dyn>> {
-    let mut pca = pca::open_pca()?;
-    let transformed_matrix = pca::pca_transform(&mut pca, &matrix, PCA_COMPONENTS);
-    let transformed_matrix = transformed_matrix.insert_column(0, 1.0);
-    let qr = nalgebra_lapack::QR::new(transformed_matrix)?;
-    Ok(qr)
-}
+pub mod n_algebra {
+    use super::*;
 
-// QR nAlgebra with Column Pivoting
-// Returns a tuple containing a trimmed version of Q and R matrices
-pub fn qr_nalgebra_lapack(
-    x: DMatrix<f64>,
-) -> (
-    DMatrix<f64>,
-    DMatrix<f64>,
-    nalgebra::PermutationSequence<nalgebra::Dyn>,
-) {
-    let qr = x.col_piv_qr();
+    pub mod pca {
+        use super::*;
+        use crate::PCA_COMPONENTS;
+        use crate::preprocessing::pca;
 
-    let (q, rt, p) = qr.unpack();
-    let qt = q.transpose();
+        // Returns the factorized A matrix as QR
+        pub fn decompose(
+            matrix: DMatrix<f64>,
+        ) -> Result<nalgebra_lapack::QR<f64, nalgebra::Dyn, nalgebra::Dyn>> {
+            let mut pca = pca::open_pca()?;
+            let transformed_matrix = pca::pca_transform(&mut pca, &matrix, PCA_COMPONENTS);
+            let transformed_matrix = transformed_matrix.insert_column(0, 1.0);
+            let qr = nalgebra_lapack::QR::new(transformed_matrix)?;
+            Ok(qr)
+        }
 
-    let rank = (0..rt.nrows().min(rt.ncols()))
-        .take_while(|&i| rt[(i, i)].abs() > EPSILON)
-        .count();
+        pub fn solve(
+            qr: &nalgebra_lapack::QR<f64, nalgebra::Dyn, nalgebra::Dyn>,
+            trn_lbl: &[u8],
+        ) -> Result<DMatrix<f64>> {
+            let mut all_weights = DMatrix::zeros(qr.ncols(), 10);
+            for digit in 0..=9 {
+                println!("Training {digit}");
+                let train_label = prepare_trn_lbl_nalgebra(trn_lbl, digit);
+                let weights = qr.solve(train_label)?;
+                all_weights.set_column(digit as usize, &weights);
+            }
 
-    let qt_trimmed = qt.rows(0, rank).into_owned();
-    let rt_trimmed = rt.view((0, 0), (rank, rank)).into_owned();
+            Ok(all_weights)
+        }
+    }
 
-    (qt_trimmed, rt_trimmed, p)
+    // QR nAlgebra with Column Pivoting
+    // Returns a tuple containing a trimmed version of Q and R matrices
+    pub fn decompose(
+        x: DMatrix<f64>,
+    ) -> (
+        DMatrix<f64>,
+        DMatrix<f64>,
+        nalgebra::PermutationSequence<nalgebra::Dyn>,
+    ) {
+        let qr = x.col_piv_qr();
+
+        let (q, rt, p) = qr.unpack();
+        let qt = q.transpose();
+
+        let rank = (0..rt.nrows().min(rt.ncols()))
+            .take_while(|&i| rt[(i, i)].abs() > EPSILON)
+            .count();
+
+        let qt_trimmed = qt.rows(0, rank).into_owned();
+        let rt_trimmed = rt.view((0, 0), (rank, rank)).into_owned();
+
+        (qt_trimmed, rt_trimmed, p)
+    }
+
+    pub fn solve(
+        trn_lbl: &[u8],
+        n_features: usize,
+        q: DMatrix<f64>,
+        rt: DMatrix<f64>,
+        p: nalgebra::PermutationSequence<nalgebra::Dyn>,
+    ) -> Result<DMatrix<f64>> {
+        let mut all_weights = DMatrix::zeros(n_features, 10);
+        for digit in 0..=9 {
+            let train_label = prepare_trn_lbl_nalgebra(trn_lbl, digit);
+            let qtb = &q * train_label;
+            let weights = rt.solve_upper_triangular(&qtb).unwrap();
+            let mut weights = weights.resize_vertically(n_features, 0.0);
+            p.inv_permute_rows(&mut weights);
+            all_weights.set_column(digit as usize, &weights);
+        }
+        Ok(all_weights)
+    }
 }
 
 // fn qr_least_squares_faer(matrix: Mat<f64>, vector: Col<f64>, digit: u8) -> Weights {

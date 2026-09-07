@@ -13,11 +13,15 @@ use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 
-const EPSILON: f64 = 1e-8;
 const N_TRAINING_SET: u32 = 1000;
 const N_TESTING_SET: u32 = 10000;
 const PCA_COMPONENTS: usize = 50;
-const EPOCHS: usize = 1500;
+
+// Linear Regression
+const EPSILON: f64 = 1e-8;
+
+// Logistic Regression
+const EPOCHS: usize = 50;
 const ALPHA: f64 = 0.5; // Learning Rate
 
 fn main() -> Result<()> {
@@ -177,28 +181,6 @@ enum Solver {
 enum Library {
     NAlgebra,
     Faer,
-}
-
-fn svd_train_digits(pseudo_inverse: DMatrix<f64>, trn_lbl: &[u8], pca: bool) -> Result<()> {
-    let mut all_weights = DMatrix::zeros(pseudo_inverse.nrows(), 10);
-    for i in 0..=9 {
-        let train_label =
-            DVector::from_row_slice(trn_lbl).map(|digit| if digit == i { 1.0 } else { 0.0 });
-        let weights = &pseudo_inverse * train_label;
-        all_weights.set_column(i as usize, &weights);
-    }
-
-    let model_type = ModelType::LinearRegression {
-        weights: all_weights,
-        epsilon: EPSILON,
-    };
-
-    let pca = if pca { Some(PCA_COMPONENTS) } else { None };
-
-    let model = Model::new(pseudo_inverse.nrows(), pca, model_type);
-    save_weights(model)?;
-
-    Ok(())
 }
 
 fn prepare_trn_img_nalgebra(trn_img: &[u8]) -> DMatrix<f64> {
