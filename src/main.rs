@@ -15,7 +15,7 @@ use std::time::Instant;
 const EPSILON: f64 = 1e-8;
 const N_TRAINING_SET: u32 = 1000;
 const N_TESTING_SET: u32 = 10000;
-const PCA_COMPONENTS: usize = 30;
+const PCA_COMPONENTS: usize = 50;
 const EPOCHS: usize = 1500;
 const ALPHA: f64 = 0.5; // Learning Rate
 
@@ -422,7 +422,7 @@ fn qr_nalgebra_lapack_pca(
     Ok(qr)
 }
 
-// QR nAlgebra without PCA
+// QR nAlgebra with Column Pivoting
 // Returns a tuple containing a trimmed version of Q and R matrices
 fn qr_nalgebra_lapack(
     x: DMatrix<f64>,
@@ -503,18 +503,6 @@ fn select_train_or_infer(
             }
             1 => {
                 let model = get_weights()?;
-
-                // let file = File::open("logistic.json")?;
-                // let weights: Vec<Vec<f64>> = serde_json::from_reader(file)?;
-                // let weights = match weights.model {
-                //     ModelType::LogisticRegression {
-                //         weights,
-                //         learning_rate: _,
-                //         epochs: _,
-                //     } => weights,
-                //     ModelType::LinearRegression { weights, epsilon } => weights,
-                // };
-
                 digit_inference(tst_img, tst_lbl, model)?;
             }
             2 => {
@@ -589,7 +577,7 @@ fn train_all_digits(
 
                     if use_pca {
                         let qr = qr_nalgebra_lapack_pca(train_data)?;
-                        let mut all_weights = DMatrix::zeros(785, 10);
+                        let mut all_weights = DMatrix::zeros(qr.ncols(), 10);
                         for digit in 0..=9 {
                             println!("Training {digit}");
                             let train_label = prepare_trn_lbl_nalgebra(trn_lbl, digit);
