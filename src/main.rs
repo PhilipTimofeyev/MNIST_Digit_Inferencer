@@ -16,8 +16,8 @@ const EPSILON: f64 = 1e-8;
 const N_TRAINING_SET: u32 = 1000;
 const N_TESTING_SET: u32 = 10000;
 const PCA_COMPONENTS: usize = 30;
-const EPOCHS: usize = 20;
-const ALPHA: f64 = 1.0; // Learning Rate
+const EPOCHS: usize = 1500;
+const ALPHA: f64 = 0.5; // Learning Rate
 
 fn main() -> Result<()> {
     let Mnist {
@@ -92,13 +92,29 @@ fn softmax(logits: &DMatrix<f64>) -> DMatrix<f64> {
     p
 }
 
+fn cross_entropy_loss(p: &DMatrix<f64>, y: &DMatrix<f64>) -> f64 {
+    let mut loss = 0.0;
+
+    for i in 0..p.nrows() {
+        for j in 0..p.ncols() {
+            if y[(i, j)] > 0.0 {
+                loss -= y[(i, j)] * p[(i, j)].ln();
+            }
+        }
+    }
+
+    loss / p.nrows() as f64
+}
+
 // x is input matrix, y is the one hot matrix
 // epoch is one round of learning
 fn logistic_regression(x: &DMatrix<f64>, y: &DMatrix<f64>) -> Model {
     let mut weights = DMatrix::zeros(x.ncols(), 10);
-    for epoch in 0..EPOCHS {
+    for epoch in 1..=EPOCHS {
         let logits = x * &weights;
         let p = softmax(&logits);
+        let loss = cross_entropy_loss(&p, y);
+        println!("epoch: {epoch} | loss: {loss}");
         let error = &p - y;
         let gradient = x.transpose() * error / x.nrows() as f64;
         weights -= gradient * ALPHA;
@@ -113,32 +129,44 @@ fn logistic_regression(x: &DMatrix<f64>, y: &DMatrix<f64>) -> Model {
     Model::new(x.ncols(), true, None, model_type)
 }
 
-// Saves weights to a new folder with the name structure of "weights_N TRAINING SIZE_EPSILON"
-fn save_weights(weights: Model) -> Result<()> {
+// Saves weights to a new folder based on model
+fn save_weights(model: Model) -> Result<()> {
     let path = std::path::Path::new("./weights");
     std::fs::create_dir_all(path)?;
 
-    let filename = match &weights.model {
+    let pca = if model.pca.is_some() {
+        String::from("true")
+    } else {
+        String::from("false")
+    };
+
+    let filename = match &model.model {
         ModelType::LinearRegression { weights, epsilon } => {
             let folder = String::from("linear_regression");
             std::fs::create_dir_all(format!("weights/{}", folder))?;
-            format!("weights/{}/test_linear", folder)
+            format!(
+                "weights/{}/linear_{}_{}_pca-{}.json",
+                folder, model.n_train, epsilon, pca
+            )
         }
         ModelType::LogisticRegression {
-            weights,
+            weights: _,
             learning_rate,
             epochs,
         } => {
             let folder = String::from("logistic_regression");
             std::fs::create_dir_all(format!("weights/{}", folder))?;
-            format!("weights/{}/test_logistic", folder)
+            format!(
+                "weights/{}/logistic_{}_{}_{}",
+                folder, model.n_train, learning_rate, epochs
+            )
         }
     };
 
     let file = File::create(filename).context("Failed to create file at path")?;
     let mut writer = BufWriter::new(file);
 
-    serde_json::to_writer_pretty(&mut writer, &weights)
+    serde_json::to_writer_pretty(&mut writer, &model)
         .context("Failed to serialize weights into JSON format")?;
 
     Ok(())
@@ -465,7 +493,6 @@ fn select_train_or_infer(
             "Train Single Digit",
             "Train All Digits",
             "Inference",
-            "Inference Logistic",
             "Build PCA",
             "Exit",
         ];
@@ -488,14 +515,7 @@ fn select_train_or_infer(
             }
             2 => {
                 let weights = get_weights()?;
-                // digit_inference(tst_img, tst_lbl, weights)?
-            }
-            3 => {
-                let x = DMatrix::from_row_slice(N_TESTING_SET as usize, 784, tst_img)
-                    .map(|pixel| pixel as f64 / 255.0);
-                let x = x.insert_column(0, 1.0);
 
-                let weights = get_weights()?;
                 // let file = File::open("logistic.json")?;
                 // let weights: Vec<Vec<f64>> = serde_json::from_reader(file)?;
                 let weights = match weights.model {
@@ -506,17 +526,10 @@ fn select_train_or_infer(
                     } => weights,
                     ModelType::LinearRegression { weights, epsilon } => weights,
                 };
-                let predictions = inference(&x, &weights);
-                let mut score = 0;
-                for i in 0..N_TESTING_SET as usize {
-                    if tst_lbl[i] == predictions[i] as u8 {
-                        score += 1
-                    };
-                }
 
-                println!("Score: {} ", score as f64 / N_TESTING_SET as f64);
+                digit_inference(tst_img, tst_lbl, weights)?;
             }
-            4 => {
+            3 => {
                 let pca = fit_pca(trn_img);
                 save_pca(pca)?;
             }
@@ -762,36 +775,6 @@ fn prepare_train_data_faer(
     Ok((train_data, train_label))
 }
 
-// // Saves weights to a new folder with the name structure of "weights_N TRAINING SIZE_EPSILON"
-// fn save_json(weights: Weights) -> Result<()> {
-//     let path = std::path::Path::new("./weights");
-//     std::fs::create_dir_all(path)?;
-//
-//     let weights_folder = format!("weights_{}_{}", N_TRAINING_SET, EPSILON);
-//     let weights_folder = path.join(weights_folder);
-//     std::fs::create_dir_all(&weights_folder)?;
-//
-//     let filename = format!("{}/{} weights.json", weights_folder.display(), {
-//         weights.digit
-//     });
-//     let file = File::create(filename).context("Failed to create file at path")?;
-//     let mut writer = BufWriter::new(file);
-//
-//     serde_json::to_writer_pretty(&mut writer, &weights)
-//         .context("Failed to serialize weights into JSON format")?;
-//
-//     Ok(())
-// }
-
-// fn open_json(digit: u8, path: &std::path::Path) -> Result<Weights> {
-//     let filename = format!("{}/{} weights.json", path.display(), digit);
-//     let file = File::open(filename)?;
-//     let weights_json = BufReader::new(file);
-//     let weights =
-//         serde_json::from_reader(weights_json).context("Failed to deserialize weights JSON")?;
-//     Ok(weights)
-// }
-
 fn open_pca() -> Result<Pca> {
     let filename = "pca/pca.json";
     let file = File::open(filename)?;
@@ -801,106 +784,68 @@ fn open_pca() -> Result<Pca> {
     Ok(weights)
 }
 
-// fn get_weights() -> Result<Vec<Weights>> {
-//     let mut weights: Vec<Weights> = vec![];
-//     let folder = FileDialog::new()
-//         .set_title("Select a folder to open in terminal")
-//         .pick_folder();
-//
-//     match folder {
-//         Some(path) => {
-//             for i in 0..=9 {
-//                 let weight = open_json(i, path.as_path())?;
-//                 weights.push(weight);
-//             }
-//         }
-//         None => {
-//             eprintln!("No folder selected.");
-//         }
-//     }
-//
-//     Ok(weights)
-// }
+fn digit_inference(tst_img: &[u8], tst_lbl: &[u8], weights: DMatrix<f64>) -> Result<()> {
+    let mut test_data = DMatrix::from_row_slice(N_TESTING_SET as usize, 784, tst_img)
+        // .map(|pixel| if pixel as f64 > 0.0 { 1.0 } else { 0.0 });
+        .map(|pixel| pixel as f64 / 255.0);
 
-// fn digit_inference(tst_img: &[u8], tst_lbl: &[u8], weights: Vec<Weights>) -> Result<()> {
-//     let mut test_data = DMatrix::from_row_slice(N_TESTING_SET as usize, 784, tst_img)
-//         // .map(|pixel| if pixel as f64 > 0.0 { 1.0 } else { 0.0 });
-//         .map(|pixel| pixel as f64 / 255.0);
-//
-//     let n_train = weights.first().unwrap().n_train.unwrap();
-//     let epsilon = weights.first().unwrap().epsilon.unwrap();
-//     let is_pca = weights.first().unwrap().pca;
-//
-//     if is_pca {
-//         let mut pca = open_pca()?;
-//         test_data = pca_transform(&mut pca, &test_data, PCA_COMPONENTS);
-//     }
-//
-//     test_data = test_data.insert_column(0, 1.0);
-//     let mut results: Vec<(u8, u8)> = vec![];
-//     let mut metrics: Vec<F1> = (0..10)
-//         .map(|digit| F1::new(digit, n_train, epsilon))
-//         .collect();
-//
-//     for (i, row) in test_data.row_iter().enumerate() {
-//         let (mut digit, mut max_score) = (0, f64::NEG_INFINITY);
-//         for digit_weights in &weights {
-//             let weights = DVector::from_row_slice(&digit_weights.weights);
-//
-//             let score = row.transpose().dot(&weights);
-//
-//             if score > max_score {
-//                 max_score = score;
-//                 digit = digit_weights.digit;
-//             }
-//         }
-//
-//         for metric in &mut metrics {
-//             if digit == metric.digit && tst_lbl[i] == metric.digit {
-//                 metric.tpos += 1.0;
-//             } else if digit == metric.digit && tst_lbl[i] != metric.digit {
-//                 metric.fpos += 1.0;
-//             } else if digit != metric.digit && tst_lbl[i] == metric.digit {
-//                 metric.fneg += 1.0;
-//             }
-//         }
-//
-//         results.push((tst_lbl[i], digit));
-//     }
-//
-//     for digit in &metrics {
-//         println!(
-//             "Digit: {}\nPrecision: {}\nRecall: {}\nF1: {}\n",
-//             digit.digit,
-//             digit.precision(),
-//             digit.recall(),
-//             digit.f1()
-//         );
-//     }
-//
-//     let average_f1 = metrics.iter().fold(0.0, |acc, digit| acc + digit.f1());
-//     let average_f1 = average_f1 / metrics.len() as f64;
-//
-//     let num_correct = results.iter().fold(
-//         0,
-//         |acc: u32, digits| {
-//             if digits.0 == digits.1 { acc + 1 } else { acc }
-//         },
-//     );
-//
-//     f1_scatterplot(metrics)?;
-//
-//     let total_scores = N_TESTING_SET;
-//
-//     let percent_correct = (num_correct as f32 / N_TESTING_SET as f32) * 100.0;
-//
-//     println!(
-//         "Number of Tests: {}\n Number correct: {}\n Percent Correct: {:.2}%\n Average F1: {}",
-//         total_scores, num_correct, percent_correct, average_f1
-//     );
-//
-//     Ok(())
-// }
+    // let n_train = weights.first().unwrap().n_train.unwrap();
+    // let epsilon = weights.first().unwrap().epsilon.unwrap();
+    // let is_pca = weights.first().unwrap().pca;
+
+    // if is_pca {
+    //     let mut pca = open_pca()?;
+    //     test_data = pca_transform(&mut pca, &test_data, PCA_COMPONENTS);
+    // }
+
+    test_data = test_data.insert_column(0, 1.0);
+    let mut metrics: Vec<F1> = (0..10)
+        .map(|digit| F1::new(digit, N_TRAINING_SET, EPSILON))
+        .collect();
+
+    let predictions = inference(&test_data, &weights);
+    let mut score = 0;
+    for i in 0..predictions.nrows() as usize {
+        for metric in &mut metrics {
+            if predictions[i] == metric.digit as usize && tst_lbl[i] == metric.digit {
+                metric.tpos += 1.0;
+            } else if predictions[i] == metric.digit as usize && tst_lbl[i] != metric.digit {
+                metric.fpos += 1.0;
+            } else if predictions[i] != metric.digit as usize && tst_lbl[i] == metric.digit {
+                metric.fneg += 1.0;
+            }
+        }
+        if tst_lbl[i] == predictions[i] as u8 {
+            score += 1
+        };
+    }
+
+    for digit in &metrics {
+        println!(
+            "Digit: {}\nPrecision: {}\nRecall: {}\nF1: {}\n",
+            digit.digit,
+            digit.precision(),
+            digit.recall(),
+            digit.f1()
+        );
+    }
+
+    let average_f1 = metrics.iter().fold(0.0, |acc, digit| acc + digit.f1());
+    let average_f1 = average_f1 / metrics.len() as f64;
+
+    f1_scatterplot(metrics)?;
+
+    let total_scores = N_TESTING_SET;
+
+    let percent_correct = (score as f32 / N_TESTING_SET as f32) * 100.0;
+
+    println!(
+        "Number of Tests: {}\n Number correct: {}\n Percent Correct: {:.2}%\n Average F1: {}",
+        total_scores, score, percent_correct, average_f1
+    );
+
+    Ok(())
+}
 
 // Creates a scatterplot where
 // - precision of digit is the x-axis
