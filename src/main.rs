@@ -1,6 +1,8 @@
 use crate::solvers::{qr, svd};
+mod cli;
 mod models;
 use crate::models::logistic_regression;
+mod inference;
 mod preprocessing;
 use crate::preprocessing::pca;
 mod solvers;
@@ -9,7 +11,7 @@ use dialoguer::{Confirm, FuzzySelect};
 use faer::linalg::triangular_solve::solve_upper_triangular_in_place;
 use faer::{Col, Mat, MatRef, Par};
 use mnist::*;
-use nalgebra::{DMatrix, DVector, SymmetricEigen};
+use nalgebra::{DMatrix, DVector};
 use nalgebra_lapack::QrDecomposition;
 use plotters::prelude::*;
 use rfd::FileDialog;
@@ -58,7 +60,6 @@ enum ModelType {
         weights: DMatrix<f64>,
         epsilon: f64,
     },
-
     LogisticRegression {
         weights: DMatrix<f64>,
         learning_rate: f64,
@@ -140,22 +141,6 @@ fn save_weights(model: Model) -> Result<()> {
     Ok(())
 }
 
-fn inference(x: &DMatrix<f64>, w: &DMatrix<f64>) -> DVector<usize> {
-    let scores = x * w;
-
-    // Prepare an empty vector to store the predicted digits
-    let mut predictions = DVector::zeros(scores.nrows());
-
-    // Figure out which value has the highest probability in each row.
-    // Each row has 10 probabilities representing each digit
-    for (index, row) in scores.row_iter().enumerate() {
-        let (best_digit_index, _best_digit) = row.transpose().argmax();
-        predictions[index] = best_digit_index;
-    }
-
-    predictions
-}
-
 #[derive(Debug)]
 struct F1 {
     digit: u8,
@@ -206,14 +191,14 @@ fn select_train_or_infer(
 
         match selection {
             0 => {
-                let library = select_training_library()?;
-                let method = select_training_method()?;
-                let use_pca = use_pca()?;
+                let library = cli::select_training_library()?;
+                let method = cli::select_training_method()?;
+                let use_pca = cli::use_pca()?;
                 train_all_digits(trn_img, trn_lbl, library, method, use_pca)?;
             }
             1 => {
                 let model = get_weights()?;
-                digit_inference(tst_img, tst_lbl, model)?;
+                inference::digit_inference(tst_img, tst_lbl, model)?;
             }
             2 => {
                 let pca = pca::fit_pca(trn_img);
@@ -354,43 +339,6 @@ fn train_all_digits(
     Ok(())
 }
 
-fn use_pca() -> dialoguer::Result<bool> {
-    let pca: bool = Confirm::new()
-        .with_prompt("Use Principle Component Analysis?")
-        .interact()?;
-
-    Ok(pca)
-}
-
-fn select_training_library() -> Result<Library> {
-    let items = vec!["Faer", "nAlgebra"];
-    let selection = FuzzySelect::new()
-        .with_prompt("Select and option:")
-        .items(&items)
-        .interact()?;
-
-    match selection {
-        0 => Ok(Library::Faer),
-        1 => Ok(Library::NAlgebra),
-        _ => todo!(),
-    }
-}
-
-fn select_training_method() -> Result<Method> {
-    let items = vec!["SVD", "QR", "Logistic"];
-    let selection = FuzzySelect::new()
-        .with_prompt("Select and option:")
-        .items(&items)
-        .interact()?;
-
-    match selection {
-        0 => Ok(Method::SVD),
-        1 => Ok(Method::QR),
-        2 => Ok(Method::Logistic),
-        _ => todo!(),
-    }
-}
-
 fn prepare_trn_img_nalgebra(trn_img: &[u8]) -> DMatrix<f64> {
     DMatrix::from_row_slice(N_TRAINING_SET as usize, 784, trn_img)
         // .map(|pixel| if pixel as f64 > 0.0 { 1.0 } else { 0.0 });
@@ -419,77 +367,6 @@ fn prepare_train_data_faer(
         .map(|digit| if *digit == digit_to_train { 1.0 } else { 0.0 });
 
     Ok((train_data, train_label))
-}
-
-fn digit_inference(tst_img: &[u8], tst_lbl: &[u8], model: Model) -> Result<()> {
-    let weights = match model.model {
-        ModelType::LogisticRegression {
-            weights,
-            learning_rate: _,
-            epochs: _,
-        } => weights,
-        ModelType::LinearRegression {
-            weights,
-            epsilon: _,
-        } => weights,
-    };
-
-    let mut test_data = DMatrix::from_row_slice(N_TESTING_SET as usize, 784, tst_img)
-        // .map(|pixel| if pixel as f64 > 0.0 { 1.0 } else { 0.0 });
-        .map(|pixel| pixel as f64 / 255.0);
-
-    if let Some(n_components) = model.pca {
-        let mut pca = pca::open_pca()?;
-        test_data = pca::pca_transform(&mut pca, &test_data, n_components);
-    }
-
-    test_data = test_data.insert_column(0, 1.0);
-    let mut metrics: Vec<F1> = (0..10)
-        .map(|digit| F1::new(digit, N_TRAINING_SET, EPSILON))
-        .collect();
-
-    let predictions = inference(&test_data, &weights);
-    let mut score = 0;
-    for i in 0..predictions.nrows() as usize {
-        for metric in &mut metrics {
-            if predictions[i] == metric.digit as usize && tst_lbl[i] == metric.digit {
-                metric.tpos += 1.0;
-            } else if predictions[i] == metric.digit as usize && tst_lbl[i] != metric.digit {
-                metric.fpos += 1.0;
-            } else if predictions[i] != metric.digit as usize && tst_lbl[i] == metric.digit {
-                metric.fneg += 1.0;
-            }
-        }
-        if tst_lbl[i] == predictions[i] as u8 {
-            score += 1
-        };
-    }
-
-    for digit in &metrics {
-        println!(
-            "Digit: {}\nPrecision: {}\nRecall: {}\nF1: {}\n",
-            digit.digit,
-            digit.precision(),
-            digit.recall(),
-            digit.f1()
-        );
-    }
-
-    let average_f1 = metrics.iter().fold(0.0, |acc, digit| acc + digit.f1());
-    let average_f1 = average_f1 / metrics.len() as f64;
-
-    f1_scatterplot(metrics)?;
-
-    let total_scores = N_TESTING_SET;
-
-    let percent_correct = (score as f32 / N_TESTING_SET as f32) * 100.0;
-
-    println!(
-        "Number of Tests: {}\n Number correct: {}\n Percent Correct: {:.2}%\n Average F1: {}",
-        total_scores, score, percent_correct, average_f1
-    );
-
-    Ok(())
 }
 
 // Creates a scatterplot where
