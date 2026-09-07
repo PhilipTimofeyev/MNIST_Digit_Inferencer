@@ -487,15 +487,8 @@ fn select_train_or_infer(
     tst_img: &[u8],
     tst_lbl: &[u8],
 ) -> Result<()> {
-    let mut digit_to_train;
     loop {
-        let items = vec![
-            "Train Single Digit",
-            "Train All Digits",
-            "Inference",
-            "Build PCA",
-            "Exit",
-        ];
+        let items = vec!["Train Digits", "Inference", "Build PCA", "Exit"];
         let selection = FuzzySelect::new()
             .with_prompt("Select and option:")
             .items(&items)
@@ -503,17 +496,12 @@ fn select_train_or_infer(
 
         match selection {
             0 => {
-                digit_to_train = select_digit_to_train()?;
-                let method = select_training_method()?;
-                train_single_digit(trn_img, trn_lbl, digit_to_train, method)?;
-            }
-            1 => {
                 let library = select_training_library()?;
                 let method = select_training_method()?;
                 let use_pca = use_pca()?;
                 train_all_digits(trn_img, trn_lbl, library, method, use_pca)?;
             }
-            2 => {
+            1 => {
                 let weights = get_weights()?;
 
                 // let file = File::open("logistic.json")?;
@@ -529,7 +517,7 @@ fn select_train_or_infer(
 
                 digit_inference(tst_img, tst_lbl, weights)?;
             }
-            3 => {
+            2 => {
                 let pca = fit_pca(trn_img);
                 save_pca(pca)?;
             }
@@ -663,49 +651,6 @@ fn train_all_digits(
     };
 
     Ok(())
-}
-
-fn train_single_digit(trn_img: &[u8], trn_lbl: &[u8], digit: u8, method: Method) -> Result<()> {
-    println!("Training digit: {}", digit);
-
-    let start = Instant::now();
-    todo!();
-
-    // let weights = match method {
-    //     Method::Lapack => {
-    //         let (train_data, train_label) = prepare_train_data_nalgebra(trn_img, trn_lbl, digit)?;
-    //         svd_least_squares_lapack(&train_data, &train_label, digit)
-    //     }
-    //     Method::NAlgebraQR => {
-    //         let (train_data, train_label) = prepare_train_data_nalgebra(trn_img, trn_lbl, digit)?;
-    //         qr_least_squares_nalgebra(train_data, &train_label, digit)
-    //     }
-    //     Method::FaerSVD => {
-    //         let (train_data, train_label) = prepare_train_data_faer(trn_img, trn_lbl, digit)?;
-    //         svd_least_squares_faer(train_data, train_label, digit)
-    //     }
-    //     Method::FaerQR => {
-    //         let (train_data, train_label) = prepare_train_data_faer(trn_img, trn_lbl, digit)?;
-    //         qr_least_squares_faer(train_data, train_label, digit)
-    //     }
-    // };
-    // println!("Time elapsed: {:?}", start.elapsed());
-    // save_json(weights)?;
-    //
-    // Ok(())
-}
-
-fn select_digit_to_train() -> Result<u8> {
-    let digits: Vec<u8> = (0..=9).collect();
-
-    let selection = FuzzySelect::new()
-        .with_prompt("Select a digit to train:")
-        .items(&digits)
-        .interact()?;
-
-    let digit: u8 = selection as u8;
-
-    Ok(digit)
 }
 
 fn use_pca() -> dialoguer::Result<bool> {
