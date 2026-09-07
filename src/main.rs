@@ -1,24 +1,17 @@
-use crate::solvers::{qr, svd};
 mod cli;
-mod models;
-use crate::models::logistic_regression;
 mod inference;
+mod models;
 mod preprocessing;
-use crate::preprocessing::pca;
 mod solvers;
 use anyhow::{Context, Result};
-use dialoguer::{Confirm, FuzzySelect};
-use faer::linalg::triangular_solve::solve_upper_triangular_in_place;
-use faer::{Col, Mat, MatRef, Par};
+use faer::{Col, Mat, MatRef};
 use mnist::*;
 use nalgebra::{DMatrix, DVector};
-use nalgebra_lapack::QrDecomposition;
 use plotters::prelude::*;
 use rfd::FileDialog;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
-use std::time::Instant;
 
 const EPSILON: f64 = 1e-8;
 const N_TRAINING_SET: u32 = 1000;
@@ -41,7 +34,7 @@ fn main() -> Result<()> {
         .test_set_length(N_TESTING_SET)
         .finalize();
 
-    select_train_or_infer(&trn_img, &trn_lbl, &tst_img, &tst_lbl)?;
+    cli::select_train_or_infer(&trn_img, &trn_lbl, &tst_img, &tst_lbl)?;
 
     Ok(())
 }
@@ -176,45 +169,9 @@ impl F1 {
     }
 }
 
-fn select_train_or_infer(
-    trn_img: &[u8],
-    trn_lbl: &[u8],
-    tst_img: &[u8],
-    tst_lbl: &[u8],
-) -> Result<()> {
-    loop {
-        let items = vec!["Train Digits", "Inference", "Build PCA", "Exit"];
-        let selection = FuzzySelect::new()
-            .with_prompt("Select and option:")
-            .items(&items)
-            .interact()?;
-
-        match selection {
-            0 => {
-                let library = cli::select_training_library()?;
-                let method = cli::select_training_method()?;
-                let use_pca = cli::use_pca()?;
-                train_all_digits(trn_img, trn_lbl, library, method, use_pca)?;
-            }
-            1 => {
-                let model = get_weights()?;
-                inference::digit_inference(tst_img, tst_lbl, model)?;
-            }
-            2 => {
-                let pca = pca::fit_pca(trn_img);
-                preprocessing::pca::save_pca(pca)?;
-            }
-            _ => break,
-        }
-    }
-
-    Ok(())
-}
-
-enum Method {
+enum Solver {
     SVD,
     QR,
-    Logistic,
 }
 
 enum Library {
@@ -240,101 +197,6 @@ fn svd_train_digits(pseudo_inverse: DMatrix<f64>, trn_lbl: &[u8], pca: bool) -> 
 
     let model = Model::new(pseudo_inverse.nrows(), pca, model_type);
     save_weights(model)?;
-
-    Ok(())
-}
-
-fn train_all_digits(
-    trn_img: &[u8],
-    trn_lbl: &[u8],
-    library: Library,
-    method: Method,
-    use_pca: bool,
-) -> Result<()> {
-    match library {
-        Library::NAlgebra => {
-            let train_data = prepare_trn_img_nalgebra(trn_img);
-            match method {
-                Method::SVD => {
-                    let start = Instant::now();
-
-                    let pseudo_inverse = if use_pca {
-                        svd::svd_nalgebra_lapack_pca(train_data)?
-                    } else {
-                        svd::svd_nalgebra_lapack(train_data)?
-                    };
-
-                    svd_train_digits(pseudo_inverse, trn_lbl, use_pca)?;
-                    println!("Time elapsed: {:?}", start.elapsed());
-                }
-                Method::QR => {
-                    let start = Instant::now();
-
-                    if use_pca {
-                        let qr = qr::qr_nalgebra_lapack_pca(train_data)?;
-                        let mut all_weights = DMatrix::zeros(qr.ncols(), 10);
-                        for digit in 0..=9 {
-                            println!("Training {digit}");
-                            let train_label = prepare_trn_lbl_nalgebra(trn_lbl, digit);
-                            let weights = qr.solve(train_label)?;
-                            all_weights.set_column(digit as usize, &weights);
-                        }
-                        let model_type = ModelType::LinearRegression {
-                            weights: all_weights,
-                            epsilon: EPSILON,
-                        };
-
-                        let model = Model::new(qr.nrows(), Some(PCA_COMPONENTS), model_type);
-                        save_weights(model)?;
-                    } else {
-                        let train_data = train_data.insert_column(0, 1.0);
-                        let n_features = train_data.ncols();
-                        let (q, rt, p) = qr::qr_nalgebra_lapack(train_data);
-                        let mut all_weights = DMatrix::zeros(n_features, 10);
-                        for digit in 0..=9 {
-                            let train_label = prepare_trn_lbl_nalgebra(trn_lbl, digit);
-                            let qtb = &q * train_label;
-                            let weights = rt.solve_upper_triangular(&qtb).unwrap();
-                            let mut weights = weights.resize_vertically(n_features, 0.0);
-                            p.inv_permute_rows(&mut weights);
-                            all_weights.set_column(digit as usize, &weights);
-                        }
-                        let model_type = ModelType::LinearRegression {
-                            weights: all_weights,
-                            epsilon: EPSILON,
-                        };
-
-                        let model = Model::new(n_features, None, model_type);
-                        save_weights(model)?;
-                    }
-
-                    println!("QR elapsed: {:?}", start.elapsed());
-                }
-                Method::Logistic => {
-                    let y = logistic_regression::one_hot_encode(trn_lbl);
-                    let train_data = train_data.insert_column(0, 1.0);
-                    let weights = logistic_regression::logistic_regression(&train_data, &y);
-                    save_weights(weights)?;
-                }
-            }
-        }
-        Library::Faer => match method {
-            Method::SVD => {
-                todo!();
-                // let (train_data, train_label) = prepare_train_data_faer(trn_img, trn_lbl, i)?;
-                // // let z = pca(train_data.clone());
-                // svd_least_squares_faer(train_data, train_label, i)
-            }
-            Method::QR => {
-                todo!();
-                // let (train_data, train_label) = prepare_train_data_faer(trn_img, trn_lbl, i)?;
-                // qr_least_squares_faer(train_data, train_label, i)
-            }
-            Method::Logistic => {
-                todo!()
-            }
-        },
-    };
 
     Ok(())
 }
@@ -438,7 +300,7 @@ mod tests {
         let digit = 0;
         let epsilon = 1e-12;
 
-        let pseudoinverse = svd_nalgebra_lapack(x).unwrap();
+        let pseudoinverse = solvers::svd::svd_nalgebra_lapack(x).unwrap();
         let solution = pseudoinverse * y;
         let result = Weights::new(solution.as_slice(), digit, false);
         // let result = svd_least_squares(&x, &y, digit, epsilon);

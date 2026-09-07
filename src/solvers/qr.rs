@@ -1,8 +1,8 @@
 use super::super::preprocessing::pca;
 use crate::EPSILON;
 use crate::PCA_COMPONENTS;
-use anyhow::{Context, Result};
-use nalgebra::{DMatrix, DVector, SymmetricEigen};
+use anyhow::Result;
+use nalgebra::DMatrix;
 
 // Returns the factorized A matrix as QR
 pub fn qr_nalgebra_lapack_pca(

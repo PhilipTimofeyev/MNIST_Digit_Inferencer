@@ -1,5 +1,7 @@
-use super::super::{Model, ModelType};
+use super::super::{prepare_trn_img_nalgebra, save_weights};
 use crate::{ALPHA, EPOCHS};
+use crate::{Library, Model, ModelType};
+use anyhow::Result;
 use nalgebra::DMatrix;
 
 // Convert logits to probabilities
@@ -70,4 +72,20 @@ pub fn one_hot_encode(trn_labels: &[u8]) -> DMatrix<f64> {
     }
 
     one_hot
+}
+
+pub fn train(trn_img: &[u8], trn_lbl: &[u8], library: Library, use_pca: bool) -> Result<()> {
+    match library {
+        Library::NAlgebra => {
+            let train_data = prepare_trn_img_nalgebra(trn_img);
+
+            let y = one_hot_encode(trn_lbl);
+            let train_data = train_data.insert_column(0, 1.0);
+            let weights = logistic_regression(&train_data, &y);
+            save_weights(weights)?;
+        }
+        Library::Faer => {}
+    };
+
+    Ok(())
 }

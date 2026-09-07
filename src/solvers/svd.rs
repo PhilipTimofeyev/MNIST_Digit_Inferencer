@@ -1,8 +1,8 @@
 use super::super::preprocessing::pca;
 use crate::EPSILON;
 use crate::PCA_COMPONENTS;
-use anyhow::{Context, Result};
-use nalgebra::{DMatrix, DVector, SymmetricEigen};
+use anyhow::Result;
+use nalgebra::DMatrix;
 
 // Builds the pseudoinverse using SVD
 pub fn svd_nalgebra_lapack(matrix: DMatrix<f64>) -> Result<DMatrix<f64>> {
