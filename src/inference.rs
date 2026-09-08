@@ -1,6 +1,6 @@
-use crate::f1_scatterplot;
 use crate::preprocessing::pca;
 use crate::{EPSILON, F1, Model, ModelType, N_TESTING_SET, N_TRAINING_SET};
+use crate::{f1_scatterplot, vec2d_to_dmatrix};
 use anyhow::Result;
 use nalgebra::{DMatrix, DVector};
 
@@ -47,6 +47,7 @@ pub fn digit_inference(tst_img: &[u8], tst_lbl: &[u8], model: Model) -> Result<(
         .map(|digit| F1::new(digit, N_TRAINING_SET, EPSILON))
         .collect();
 
+    let weights = vec2d_to_dmatrix(&weights);
     let predictions = inference(&test_data, &weights);
     let mut score = 0;
     for i in 0..predictions.nrows() as usize {

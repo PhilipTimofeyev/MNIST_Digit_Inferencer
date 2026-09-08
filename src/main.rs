@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 
-const N_TRAINING_SET: u32 = 1000;
+const N_TRAINING_SET: u32 = 60000;
 const N_TESTING_SET: u32 = 10000;
 const PCA_COMPONENTS: usize = 50;
 
@@ -21,7 +21,7 @@ const PCA_COMPONENTS: usize = 50;
 const EPSILON: f64 = 1e-8;
 
 // Logistic Regression
-const EPOCHS: usize = 50;
+const EPOCHS: usize = 2000;
 const ALPHA: f64 = 0.5; // Learning Rate
 
 fn main() -> Result<()> {
@@ -54,11 +54,11 @@ struct Model {
 #[derive(Serialize, Deserialize, Debug)]
 enum ModelType {
     LinearRegression {
-        weights: DMatrix<f64>,
+        weights: Vec<Vec<f64>>,
         epsilon: f64,
     },
     LogisticRegression {
-        weights: DMatrix<f64>,
+        weights: Vec<Vec<f64>>,
         learning_rate: f64,
         epochs: usize,
     },
@@ -123,7 +123,7 @@ fn save_weights(model: Model) -> Result<()> {
             let folder = String::from("logistic_regression");
             std::fs::create_dir_all(format!("weights/{}", folder))?;
             format!(
-                "weights/{}/logistic_{}_{}_{}",
+                "weights/{}/logistic_{}_{}_{}.json",
                 folder, model.n_train, learning_rate, epochs
             )
         }
@@ -193,6 +193,11 @@ fn prepare_trn_lbl_nalgebra(trn_lbl: &[u8], digit_to_train: u8) -> DVector<f64> 
     DVector::from_row_slice(trn_lbl).map(|digit| if digit == digit_to_train { 1.0 } else { 0.0 })
 }
 
+fn prepare_trn_img_faer(trn_img: &[u8]) -> Mat<f64> {
+    MatRef::from_row_major_slice(trn_img, N_TRAINING_SET as usize, 784)
+        .map(|pixel| *pixel as f64 / 255.0)
+}
+
 fn prepare_train_data_faer(
     trn_img: &[u8],
     trn_lbl: &[u8],
@@ -211,6 +216,27 @@ fn prepare_train_data_faer(
         .map(|digit| if *digit == digit_to_train { 1.0 } else { 0.0 });
 
     Ok((train_data, train_label))
+}
+
+fn dmatrix_to_vec2d(matrix: &DMatrix<f64>) -> Vec<Vec<f64>> {
+    (0..matrix.nrows())
+        .map(|i| (0..matrix.ncols()).map(|j| matrix[(i, j)]).collect())
+        .collect()
+}
+
+fn vec2d_to_dmatrix(matrix: &[Vec<f64>]) -> DMatrix<f64> {
+    let rows = matrix.len();
+    let cols = matrix[0].len();
+
+    let flat: Vec<f64> = matrix.iter().flat_map(|row| row.iter().copied()).collect();
+
+    DMatrix::from_row_slice(rows, cols, &flat)
+}
+
+fn mat_to_vec2d(matrix: &Mat<f64>) -> Vec<Vec<f64>> {
+    (0..matrix.nrows())
+        .map(|i| (0..matrix.ncols()).map(|j| matrix[(i, j)]).collect())
+        .collect()
 }
 
 // Creates a scatterplot where

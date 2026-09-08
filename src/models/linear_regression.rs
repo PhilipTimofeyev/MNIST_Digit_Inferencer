@@ -1,6 +1,6 @@
 use super::super::{prepare_trn_img_nalgebra, save_weights};
 use crate::{
-    EPSILON, Library, Model, ModelType, PCA_COMPONENTS, Solver,
+    EPSILON, Library, Model, ModelType, PCA_COMPONENTS, Solver, dmatrix_to_vec2d,
     solvers::{qr, svd},
 };
 use anyhow::Result;
@@ -26,6 +26,7 @@ pub fn train(
                         svd::n_algebra::decompose(train_data)?
                     };
                     let weights = svd::n_algebra::solve(&pseudo_inverse, trn_lbl)?;
+                    let weights = dmatrix_to_vec2d(&weights);
                     let model_type = ModelType::LinearRegression {
                         weights,
                         epsilon: EPSILON,
@@ -39,6 +40,7 @@ pub fn train(
                     if use_pca {
                         let qr = qr::n_algebra::pca::decompose(train_data)?;
                         let weights = qr::n_algebra::pca::solve(&qr, trn_lbl)?;
+                        let weights = dmatrix_to_vec2d(&weights);
                         let model_type = ModelType::LinearRegression {
                             weights,
                             epsilon: EPSILON,
@@ -51,6 +53,7 @@ pub fn train(
                         let n_features = train_data.ncols();
                         let (q, rt, p) = qr::n_algebra::decompose(train_data);
                         let weights = qr::n_algebra::solve(trn_lbl, n_features, q, rt, p)?;
+                        let weights = dmatrix_to_vec2d(&weights);
                         let model_type = ModelType::LinearRegression {
                             weights,
                             epsilon: EPSILON,
