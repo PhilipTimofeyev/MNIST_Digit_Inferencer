@@ -1,6 +1,7 @@
 use crate::EPSILON;
 use crate::PCA_COMPONENTS;
 use anyhow::Result;
+use faer::{Col, Mat};
 use nalgebra::{DMatrix, DVector};
 
 pub mod n_algebra {
@@ -65,13 +66,33 @@ pub mod n_algebra {
     }
 }
 
-// Tolerance (Epsilon) is set internally by Faer
-// fn svd_least_squares_faer(matrix: Mat<f64>, vector: Col<f64>, digit: u8) -> Weights {
-//     let svd = matrix.thin_svd().unwrap();
-//
-//     let pseudo_inverse = svd.pseudoinverse();
-//     let solution = pseudo_inverse * vector;
-//     let solution: Vec<f64> = solution.iter().copied().collect();
-//
-//     Weights::new(solution.as_slice(), digit, false)
-// }
+pub mod faer_lib {
+
+    use super::*;
+    // Tolerance (Epsilon) is set internally by Faer
+    fn decompose(matrix: Mat<f64>, vector: Col<f64>, digit: u8) -> Mat<f64> {
+        let svd = matrix.thin_svd().unwrap();
+
+        svd.pseudoinverse()
+    }
+
+    fn solve(pseudo_inverse: &Mat<f64>, trn_lbl: &[u8]) -> Result<Mat<f64>> {
+        let mut all_weights = Mat::<f64>::zeros(pseudo_inverse.ncols(), 10);
+        for i in 0..=9 {
+            let train_label =
+                Mat::from_fn(
+                    trn_lbl.len(),
+                    1,
+                    |r, _| {
+                        if trn_lbl[r] == i { 1.0 } else { 0.0 }
+                    },
+                );
+            let weights = pseudo_inverse * train_label;
+            all_weights
+                .as_mut()
+                .col_mut(i as usize)
+                .copy_from(weights.as_ref().col(0));
+        }
+        Ok(all_weights)
+    }
+}

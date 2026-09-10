@@ -5,7 +5,7 @@ use anyhow::Result;
 use faer::Mat;
 use nalgebra::DMatrix;
 
-pub fn train(trn_img: &[u8], trn_lbl: &[u8], library: Library, use_pca: bool) -> Result<()> {
+pub fn train(trn_img: &[u8], trn_lbl: &[u8], library: Library, _use_pca: bool) -> Result<()> {
     match library {
         Library::NAlgebra => {
             let train_data = prepare_trn_img_nalgebra(trn_img);

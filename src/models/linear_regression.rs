@@ -1,6 +1,7 @@
 use super::super::{prepare_trn_img_nalgebra, save_weights};
 use crate::{
     EPSILON, Library, Model, ModelType, PCA_COMPONENTS, Solver, dmatrix_to_vec2d,
+    prepare_train_data_faer, prepare_trn_img_faer,
     solvers::{qr, svd},
 };
 use anyhow::Result;
@@ -67,9 +68,7 @@ pub fn train(
         }
         Library::Faer => match solver {
             Solver::SVD => {
-                todo!();
-                // let (train_data, train_label) = prepare_train_data_faer(trn_img, trn_lbl, i)?;
-                // // let z = pca(train_data.clone());
+                let train_data = prepare_trn_img_faer(trn_img); // // let z = pca(train_data.clone());
                 // svd_least_squares_faer(train_data, train_label, i)
             }
             Solver::QR => {

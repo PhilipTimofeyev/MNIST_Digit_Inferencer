@@ -21,8 +21,8 @@ const PCA_COMPONENTS: usize = 50;
 const EPSILON: f64 = 1e-8;
 
 // Logistic Regression
-const EPOCHS: usize = 2000;
-const ALPHA: f64 = 0.5; // Learning Rate
+const EPOCHS: usize = 3000;
+const ALPHA: f64 = 0.8; // Learning Rate
 
 fn main() -> Result<()> {
     let Mnist {
@@ -218,6 +218,7 @@ fn prepare_train_data_faer(
     Ok((train_data, train_label))
 }
 
+// Converts nAlgebra matrix to 2D vector
 fn dmatrix_to_vec2d(matrix: &DMatrix<f64>) -> Vec<Vec<f64>> {
     (0..matrix.nrows())
         .map(|i| (0..matrix.ncols()).map(|j| matrix[(i, j)]).collect())
